@@ -1,0 +1,11 @@
+defaults:
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+database:
+  url: sqlite:///regulAS.db
+
+random_state: null
+num_processes: 0
+
+experiment: ???
