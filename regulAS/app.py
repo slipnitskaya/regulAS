@@ -58,7 +58,7 @@ def run(cfg: DictConfig) -> None:
         }) if OmegaConf.is_list(n) else n
     )
 
-    if RegulAS().init(cfg) == RegulAS.Init.FAILED:
+    if RegulAS().init(cfg) == RegulAS.Status.FAILED:
         return
 
     def clone_task_tree(node: DictConfig, path: List[str], trees_: List) -> DictConfig:
