@@ -3,8 +3,9 @@ from .dao import RegulASTable
 from .dao import Data
 from .dao import Pipeline
 from .dao import Transformation
-from .dao import TransformationType
+from .dao import TransformationSequence
 from .dao import HyperParameter
+from .dao import HyperParameterValue
 from .dao import FeatureRanking
 from .dao import Prediction
 from .dao import Experiment

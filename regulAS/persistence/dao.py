@@ -2,6 +2,7 @@ import os
 import enum
 
 from sqlalchemy.engine.url import URL
+from sqlalchemy.sql.functions import now
 from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlalchemy.orm import Session, relationship, declarative_base
 
@@ -9,6 +10,9 @@ from sqlalchemy import Enum, Float, Column, String, Boolean, Integer, DateTime, 
 
 
 class BaseTable(object):
+
+    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
+    time_created = Column('time_created', DateTime, nullable=False, default=now())
 
     def __repr__(self):
         fields = list()
@@ -36,7 +40,7 @@ def create_schema(url: URL, engine: Session):
 class Data(RegulASTable):
 
     __tablename__ = 'Data'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
+
     name = Column('name', String(256))
     meta = Column('meta', String(4096))
     num_samples = Column('num_samples', Integer)
@@ -49,53 +53,68 @@ class Data(RegulASTable):
 class Pipeline(RegulASTable):
 
     __tablename__ = 'Pipeline'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
+
     experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
-    transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
-    success = Column('success', Boolean)
+    success = Column('success', Boolean, nullable=False)
 
-    transformation = relationship('Transformation', back_populates='pipelines')
+    transformations = relationship('TransformationSequence', back_populates='pipeline')
     experiment = relationship('Experiment', back_populates='pipelines')
-    hyper_parameters = relationship('HyperParameter', back_populates='pipeline')
-
-
-class TransformationType(enum.Enum):
-    MODEL = enum.auto()
-    TRANSFORM = enum.auto()
 
 
 class Transformation(RegulASTable):
 
+    class Type(enum.Enum):
+        MODEL = enum.auto()
+        TRANSFORM = enum.auto()
+
     __tablename__ = 'Transformation'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
-    prev_idx = Column('prev_id', ForeignKey('Transformation.ID'), nullable=True)
-    fqn = Column('fqn', String(512))
+
+    fqn = Column('fqn', String(512), unique=True)
     version = Column('version', String(128))
     source = Column('source', String(65536))
-    type_ = Column('type', Enum(TransformationType))
+    type_ = Column('type', Enum(Type))
 
-    previous = relationship('Transformation', uselist=False)
-    pipelines = relationship('Pipeline', back_populates='transformation')
-    hyper_parameters = relationship('HyperParameter', back_populates='transformation')
+    pipelines = relationship('TransformationSequence', back_populates='transformation')
+
+
+class TransformationSequence(RegulASTable):
+
+    __tablename__ = 'TransformationSequence'
+
+    transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
+    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
+    position = Column('position', Integer, default=1)
+
+    pipeline = relationship('Pipeline', back_populates='transformations')
+    transformation = relationship('Transformation', back_populates='pipelines')
+    hyper_parameters = relationship('HyperParameterValue', back_populates='transformation')
 
 
 class HyperParameter(RegulASTable):
 
     __tablename__ = 'HyperParameter'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
-    transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
-    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
-    name = Column('name', String(512))
+
+    name = Column('name', String(512), unique=True)
+
+    transformations = relationship('HyperParameterValue', back_populates='hyper_parameter')
+
+
+class HyperParameterValue(RegulASTable):
+
+    __tablename__ = 'HyperParameterValue'
+
+    transformation_idx = Column('transformation_id', ForeignKey('TransformationSequence.ID'))
+    hyper_parameter_idx = Column('hyper_parameter_id', ForeignKey('HyperParameter.ID'))
     value = Column('value', String(128))
 
-    transformation = relationship('Transformation', back_populates='hyper_parameters')
-    pipeline = relationship('Pipeline', back_populates='hyper_parameters')
+    transformation = relationship('TransformationSequence', back_populates='hyper_parameters')
+    hyper_parameter = relationship('HyperParameter', back_populates='transformations')
 
 
 class FeatureRanking(RegulASTable):
 
     __tablename__ = 'FeatureRanking'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
+
     experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
     feature = Column('feature', String(128))
     score = Column('score', Float)
@@ -106,12 +125,12 @@ class FeatureRanking(RegulASTable):
 class Prediction(RegulASTable):
 
     __tablename__ = 'Prediction'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
+
     experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
     sample_name = Column('sample_name', String(128))
     true_value = Column('true_value', Float)
     predicted_value = Column('predicted_value', Float)
-    training = Column('training', Integer)
+    training = Column('training', Integer, nullable=False)
     fold = Column('fold', Integer)
 
     experiment = relationship('Experiment', back_populates='predictions')
@@ -120,8 +139,7 @@ class Prediction(RegulASTable):
 class Experiment(RegulASTable):
 
     __tablename__ = 'Experiment'
-    idx = Column('ID', Integer, primary_key=True, autoincrement=True)
-    timestamp = Column('timestamp', DateTime)
+
     name = Column('name', String(1024))
     data_idx = Column('data_id', ForeignKey('Data.ID'))
     config = Column('config', String(65536))
