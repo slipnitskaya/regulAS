@@ -4,7 +4,6 @@ import enum
 import hashlib
 import inspect
 import logging
-import datetime
 import traceback
 import multiprocessing as mp
 
@@ -12,13 +11,13 @@ import hydra
 import numpy as np
 import pandas as pd
 
-from typing import Any, Dict, List, Tuple, Union, Optional, Collection
+from typing import cast, Any, Dict, List, Type, Tuple, Union, Optional, Collection
 
 from omegaconf import DictConfig, OmegaConf
 
 from sqlalchemy import and_, create_engine
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, Query
 from sqlalchemy.engine.url import URL, make_url
 
 from regulAS import persistence
@@ -62,7 +61,7 @@ class RegulAS(metaclass=Singleton):
 
     _experiment: persistence.Experiment
 
-    class Init(enum.Enum):
+    class Status(enum.Enum):
         SUCCESS = enum.auto()
         FAILED = enum.auto()
 
@@ -70,6 +69,8 @@ class RegulAS(metaclass=Singleton):
         super(RegulAS, self).__init__()
 
     def init(self, cfg: DictConfig):
+        logging.captureWarnings(True)
+
         self._num_processes = cfg.num_processes or mp.cpu_count()
 
         db_url: URL = make_url(cfg.database.url)
@@ -105,10 +106,9 @@ class RegulAS(metaclass=Singleton):
                 f'Experiment "{cfg.experiment.name}" (unique ID, MD5): {experiment_md5}) '
                 'is already present in the database. Skipping.'
             )
-            return self.Init.FAILED
+            return self.Status.FAILED
 
         self._experiment = persistence.Experiment(
-            timestamp=datetime.datetime.now(),
             name=cfg.experiment.name,
             data=data,
             config=cfg_str,
@@ -125,7 +125,7 @@ class RegulAS(metaclass=Singleton):
 
         self._tasks = dict()
 
-        return self.Init.SUCCESS
+        return self.Status.SUCCESS
 
     def _init_data(self, cfg: DictConfig) -> persistence.Data:
         self._dataset = hydra.utils.instantiate(cfg.experiment.dataset)
@@ -194,7 +194,63 @@ class RegulAS(metaclass=Singleton):
 
         _, task, *_ = self._tasks[idx]
 
-        # TODO: prepare transforms
+        pipeline = persistence.Pipeline(
+            experiment=self._experiment,
+            success=success
+        )
+
+        for position, (name, transformation_cfg) in enumerate(task.transformations.items(), 1):
+            transformation_src = inspect.getsource(hydra.utils.get_class(transformation_cfg['_target_']))
+
+            base_package, *_ = transformation_cfg['_target_'].split('.')
+            transformation_module = sys.modules.get(base_package, None)
+
+            transformation_version = None
+            if transformation_module is not None:
+                transformation_version = getattr(transformation_module, '__version__', None)
+
+            if transformation_version is None:
+                src_md5 = hashlib.md5()
+                src_md5.update(transformation_src.encode())
+                transformation_version = src_md5.hexdigest()
+
+            transformation = self._get_dao(
+                persistence.Transformation,
+                condition=and_(
+                    persistence.Transformation.fqn == transformation_cfg['_target_'],
+                    persistence.Transformation.version == transformation_version,
+                    persistence.Transformation.type_ == persistence.Transformation.Type.TRANSFORM
+                ),
+                fqn=transformation_cfg['_target_'],
+                version=transformation_version,
+                source=transformation_src,
+                type_=persistence.Transformation.Type.TRANSFORM
+            )
+
+            transformation_sequence = persistence.TransformationSequence(
+                pipeline=pipeline,
+                transformation=transformation,
+                position=position
+            )
+
+            for hp_name, value in transformation_cfg.items():
+                if hp_name == '_target_':
+                    continue
+
+                hyper_parameter = self._get_dao(
+                    persistence.HyperParameter,
+                    condition=(persistence.HyperParameter.name == hp_name),
+                    name=hp_name
+                )
+
+                hyper_parameter_value = persistence.HyperParameterValue(
+                    transformation=transformation_sequence,
+                    hyper_parameter=hyper_parameter,
+                    value=str(value)
+                )
+                transformation_sequence.hyper_parameters.append(hyper_parameter_value)
+
+            pipeline.transformations.append(transformation_sequence)
 
         model_name = next(iter(task.model.keys()))
         model_cfg = task.model[model_name]
@@ -202,49 +258,55 @@ class RegulAS(metaclass=Singleton):
         model_src = inspect.getsource(hydra.utils.get_class(model_cfg['_target_']))
 
         base_package, *_ = model_cfg['_target_'].split('.')
-        model_version = getattr(sys.modules, base_package, None)
+        model_module = sys.modules.get(base_package, None)
+
+        model_version = None
+        if model_module is not None:
+            model_version = getattr(model_module, '__version__', None)
+
         if model_version is None:
-            model_src_md5 = hashlib.md5()
-            model_src_md5.update(model_src.encode())
-            model_version = model_src_md5.hexdigest()
+            src_md5 = hashlib.md5()
+            src_md5.update(model_src.encode())
+            model_version = src_md5.hexdigest()
 
-        model = self.db_connection.query(
-            persistence.Transformation
-        ).filter(
+        model = self._get_dao(
+            persistence.Transformation,
             and_(
+                persistence.Transformation.fqn == model_cfg['_target_'],
                 persistence.Transformation.version == model_version,
-                persistence.Transformation.type_ == persistence.TransformationType.MODEL
-            )
-        ).first()
-        if model is None:
-            model = persistence.Transformation(
-                fqn=model_cfg['_target_'],
-                version=model_version,
-                source=model_src,
-                type_=persistence.TransformationType.MODEL
-            )
-
-        pipeline = persistence.Pipeline(
-            experiment=self._experiment,
-            transformation=model,
-            success=success
+                persistence.Transformation.type_ == persistence.Transformation.Type.MODEL
+            ),
+            fqn=model_cfg['_target_'],
+            version=model_version,
+            source=model_src,
+            type_=persistence.Transformation.Type.MODEL
         )
 
-        hyper_parameters = list()
-        for name, value in model_cfg.items():
-            if name == '_target_':
+        transformation_sequence = persistence.TransformationSequence(
+            pipeline=pipeline,
+            transformation=model
+        )
+
+        for hp_name, value in model_cfg.items():
+            if hp_name == '_target_':
                 continue
 
-            hyper_param = persistence.HyperParameter(
-                transformation=model,
-                pipeline=pipeline,
-                name=name,
+            hyper_parameter = self._get_dao(
+                persistence.HyperParameter,
+                condition=(persistence.HyperParameter.name == hp_name),
+                name=hp_name
+            )
+
+            hyper_parameter_value = persistence.HyperParameterValue(
+                transformation=transformation_sequence,
+                hyper_parameter=hyper_parameter,
                 value=str(value)
             )
-            hyper_parameters.append(hyper_param)
+            transformation_sequence.hyper_parameters.append(hyper_parameter_value)
+
+        pipeline.transformations.append(transformation_sequence)
 
         self.db_connection.add(pipeline)
-        self.db_connection.add_all(hyper_parameters)
         self.db_connection.commit()
 
         if success:
@@ -286,6 +348,25 @@ class RegulAS(metaclass=Singleton):
 
             pool.close()
             pool.join()
+
+            self.db_connection.commit()
+
+    def _get_dao(self,
+                 dao_cls: Type[persistence.RegulASTable],
+                 condition: Optional[Any] = None,
+                 **kwargs) -> persistence.RegulASTable:
+
+        dao: Union[Query, persistence.RegulASTable] = self.db_connection.query(dao_cls)
+
+        if condition is not None:
+            dao = dao.filter(condition)
+
+        dao = cast(persistence.RegulASTable, dao.first())
+
+        if dao is None:
+            dao = dao_cls(**kwargs)
+
+        return dao
 
     @property
     def db_connection(self):
