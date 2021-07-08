@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import enum
@@ -26,6 +27,8 @@ from regulAS.utils.base import Loader, Split
 
 SAMPLES: Optional[pd.DataFrame] = None
 TARGETS: Optional[pd.DataFrame] = None
+TRAIN_IDS: Optional[List[np.ndarray]] = None
+TEST_IDS: Optional[List[np.ndarray]] = None
 
 
 class Singleton(type):
@@ -40,6 +43,8 @@ class Singleton(type):
 
 
 class RegulAS(metaclass=Singleton):
+
+    SCORE_ATTR_NAMES = ['coef_', 'feature_importances_']
 
     _logger: logging.Logger = logging.getLogger(__name__.split('.')[0])
 
@@ -69,8 +74,6 @@ class RegulAS(metaclass=Singleton):
         super(RegulAS, self).__init__()
 
     def init(self, cfg: DictConfig):
-        logging.captureWarnings(True)
-
         self._num_processes = cfg.num_processes or mp.cpu_count()
 
         db_url: URL = make_url(cfg.database.url)
@@ -115,6 +118,7 @@ class RegulAS(metaclass=Singleton):
             md5=experiment_md5,
             random_seed=cfg.random_state
         )
+
         self.db_connection.add(self._experiment)
         self.db_connection.commit()
 
@@ -147,20 +151,36 @@ class RegulAS(metaclass=Singleton):
         return data
 
     @staticmethod
-    def _pool_init(samples: pd.DataFrame, targets: pd.DataFrame):
-        global SAMPLES, TARGETS
+    def _pool_init(
+        samples: pd.DataFrame,
+        targets: pd.DataFrame,
+        train_ids: List[np.ndarray],
+        test_ids: List[np.ndarray]
+    ) -> None:
+
+        global SAMPLES, TARGETS, TRAIN_IDS, TEST_IDS
+
         SAMPLES, TARGETS = samples, targets
+        TRAIN_IDS, TEST_IDS = train_ids, test_ids
 
     @staticmethod
-    def _runner(idx: int,
-                task: DictConfig,
-                train_ids: np.ndarray,
-                test_ids: np.ndarray) -> Tuple[int, bool, Union[np.ndarray, str]]:
+    def _runner(
+        idx: int,
+        task: DictConfig,
+        fold: int
+    ) -> Tuple[
+        int,
+        Optional[int],
+        bool,
+        Union[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]], str]
+    ]:
 
         success = False
         out = None
 
         try:
+            train_ids, test_ids = TRAIN_IDS[fold], TEST_IDS[fold]
+
             X_train = SAMPLES.iloc[train_ids]
             y_train = TARGETS.iloc[train_ids]
 
@@ -179,146 +199,97 @@ class RegulAS(metaclass=Singleton):
 
             model.fit(X_train, y_train)
 
-            out = model.predict(X_test)
+            out = model.predict(X_train), model.predict(X_test), RegulAS._get_feature_scores(model)
             success = True
         except:
             out = traceback.format_exc()
         finally:
-            return idx, success, out
+            return idx, fold, success, out
 
-    def _process_result(self, result: Tuple[int, bool, Union[np.ndarray, str]]):
-        idx, success, out = result
+    @staticmethod
+    def _get_feature_scores(model) -> np.ndarray:
+        scores = None
 
-        self._num_finished += 1
-        task_desc = f'Task #{idx} ({self._num_finished}/{self._num_tasks})'
+        for name in RegulAS.SCORE_ATTR_NAMES:
+            scores = getattr(model, name, None)
 
-        _, task, *_ = self._tasks[idx]
+            if scores is not None:
+                break
 
-        pipeline = persistence.Pipeline(
-            experiment=self._experiment,
-            success=success
-        )
+        return scores
 
-        for position, (name, transformation_cfg) in enumerate(task.transformations.items(), 1):
-            transformation_src = inspect.getsource(hydra.utils.get_class(transformation_cfg['_target_']))
+    def _process_result(
+        self,
+        result: Tuple[
+            int,
+            Optional[int],
+            bool,
+            Union[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]], str]
+        ]
+    ) -> None:
 
-            base_package, *_ = transformation_cfg['_target_'].split('.')
-            transformation_module = sys.modules.get(base_package, None)
+        pipeline = None
 
-            transformation_version = None
-            if transformation_module is not None:
-                transformation_version = getattr(transformation_module, '__version__', None)
+        try:
+            idx, fold, success, out = result
 
-            if transformation_version is None:
-                src_md5 = hashlib.md5()
-                src_md5.update(transformation_src.encode())
-                transformation_version = src_md5.hexdigest()
+            pipeline = persistence.Pipeline(experiment=self._experiment, success=success, fold=fold)
 
-            transformation = self._get_dao(
-                persistence.Transformation,
-                condition=and_(
-                    persistence.Transformation.fqn == transformation_cfg['_target_'],
-                    persistence.Transformation.version == transformation_version,
-                    persistence.Transformation.type_ == persistence.Transformation.Type.TRANSFORM
-                ),
-                fqn=transformation_cfg['_target_'],
-                version=transformation_version,
-                source=transformation_src,
-                type_=persistence.Transformation.Type.TRANSFORM
-            )
+            self._num_finished += 1
+            task_desc = f'Task #{idx} ({self._num_finished}/{self._num_tasks})'
 
-            transformation_sequence = persistence.TransformationSequence(
-                pipeline=pipeline,
-                transformation=transformation,
-                position=position
-            )
+            _, task, *_ = self._tasks[idx]
 
-            for hp_name, value in transformation_cfg.items():
-                if hp_name == '_target_':
-                    continue
+            for position, (name, transformation_cfg) in enumerate(task.transformations.items(), 1):
+                self._assign_transformation(pipeline, transformation_cfg, position)
 
-                hyper_parameter = self._get_dao(
-                    persistence.HyperParameter,
-                    condition=(persistence.HyperParameter.name == hp_name),
-                    name=hp_name
-                )
+            model_cfg = next(iter(task.model.values()))
+            self._assign_transformation(pipeline, model_cfg, type_=persistence.Transformation.Type.MODEL)
 
-                hyper_parameter_value = persistence.HyperParameterValue(
-                    transformation=transformation_sequence,
-                    hyper_parameter=hyper_parameter,
-                    value=str(value)
-                )
-                transformation_sequence.hyper_parameters.append(hyper_parameter_value)
+            if success:
+                y_pred_train, y_pred_test, feature_scores = cast(Tuple[np.ndarray, np.ndarray, np.ndarray], out)
+                self.log(logging.INFO, f'{task_desc} finished successfully.')
 
-            pipeline.transformations.append(transformation_sequence)
+                for idx_pred, idx_true in enumerate(self._train_ids[fold]):
+                    persistence.Prediction(
+                        sample_name=self._samples.index[idx_true],
+                        true_value=self.dump_ndarray(self._targets.iloc[idx_true].values),
+                        predicted_value=self.dump_ndarray(y_pred_train[idx_pred]),
+                        training=True,
+                        pipeline=pipeline
+                    )
 
-        model_name = next(iter(task.model.keys()))
-        model_cfg = task.model[model_name]
+                for idx_pred, idx_true in enumerate(self._test_ids[fold]):
+                    persistence.Prediction(
+                        pipeline=pipeline,
+                        sample_name=self._samples.index[idx_true],
+                        true_value=self.dump_ndarray(self._targets.iloc[idx_true].values),
+                        predicted_value=self.dump_ndarray(y_pred_test[idx_pred]),
+                        training=False
+                    )
 
-        model_src = inspect.getsource(hydra.utils.get_class(model_cfg['_target_']))
+                if feature_scores is not None and len(feature_scores) == len(self._samples.columns):
+                    for feature_idx, feature_name in enumerate(self._samples.columns):
+                        persistence.FeatureRanking(
+                            pipeline=pipeline,
+                            feature=feature_name,
+                            score=feature_scores[feature_idx]
+                        )
+            else:
+                tb = out
+                self.log(logging.ERROR, f'{task_desc} failed. Details:\n' + tb)
+        except:
+            self.log(logging.ERROR, f'Could not process result. Details:\n{traceback.format_exc()}')
+        finally:
+            if pipeline is not None:
+                self.db_connection.add(pipeline)
+                self.db_connection.commit()
 
-        base_package, *_ = model_cfg['_target_'].split('.')
-        model_module = sys.modules.get(base_package, None)
+    def submit(
+        self,
+        tasks: Collection[DictConfig]
+    ) -> None:
 
-        model_version = None
-        if model_module is not None:
-            model_version = getattr(model_module, '__version__', None)
-
-        if model_version is None:
-            src_md5 = hashlib.md5()
-            src_md5.update(model_src.encode())
-            model_version = src_md5.hexdigest()
-
-        model = self._get_dao(
-            persistence.Transformation,
-            and_(
-                persistence.Transformation.fqn == model_cfg['_target_'],
-                persistence.Transformation.version == model_version,
-                persistence.Transformation.type_ == persistence.Transformation.Type.MODEL
-            ),
-            fqn=model_cfg['_target_'],
-            version=model_version,
-            source=model_src,
-            type_=persistence.Transformation.Type.MODEL
-        )
-
-        transformation_sequence = persistence.TransformationSequence(
-            pipeline=pipeline,
-            transformation=model
-        )
-
-        for hp_name, value in model_cfg.items():
-            if hp_name == '_target_':
-                continue
-
-            hyper_parameter = self._get_dao(
-                persistence.HyperParameter,
-                condition=(persistence.HyperParameter.name == hp_name),
-                name=hp_name
-            )
-
-            hyper_parameter_value = persistence.HyperParameterValue(
-                transformation=transformation_sequence,
-                hyper_parameter=hyper_parameter,
-                value=str(value)
-            )
-            transformation_sequence.hyper_parameters.append(hyper_parameter_value)
-
-        pipeline.transformations.append(transformation_sequence)
-
-        self.db_connection.add(pipeline)
-        self.db_connection.commit()
-
-        if success:
-            y_pred = out
-            self.log(logging.INFO, f'{task_desc} finished successfully.')
-
-            # TODO: write into DB
-        else:
-            tb = out
-            self.log(logging.ERROR, f'{task_desc} failed. Details:\n' + tb)
-
-    def submit(self, tasks: Collection[DictConfig]) -> None:
         self.log(
             logging.INFO,
             f'{len(tasks)} tasks were prepared for '
@@ -330,13 +301,13 @@ class RegulAS(metaclass=Singleton):
         task_idx = 1
         for task in tasks:
             for fold in range(self._splitter.n_splits):
-                self._tasks[task_idx] = task_idx, task, self._train_ids[fold], self._test_ids[fold]
+                self._tasks[task_idx] = task_idx, task, fold
                 task_idx += 1
 
         with mp.Pool(
             processes=self._num_processes,
             initializer=self._pool_init,
-            initargs=(self._samples, self._targets)
+            initargs=(self._samples, self._targets, self._train_ids, self._test_ids)
         ) as pool:
 
             self._num_tasks = len(self._tasks)
@@ -349,12 +320,12 @@ class RegulAS(metaclass=Singleton):
             pool.close()
             pool.join()
 
-            self.db_connection.commit()
-
-    def _get_dao(self,
-                 dao_cls: Type[persistence.RegulASTable],
-                 condition: Optional[Any] = None,
-                 **kwargs) -> persistence.RegulASTable:
+    def _get_dao(
+        self,
+        dao_cls: Type[persistence.RegulASTable],
+        condition: Optional[Any] = None,
+        **kwargs
+    ) -> persistence.RegulASTable:
 
         dao: Union[Query, persistence.RegulASTable] = self.db_connection.query(dao_cls)
 
@@ -368,6 +339,79 @@ class RegulAS(metaclass=Singleton):
 
         return dao
 
+    def _assign_transformation(
+        self,
+        pipeline: persistence.Pipeline,
+        cfg: DictConfig,
+        position: int = 1,
+        type_: persistence.Transformation.Type = persistence.Transformation.Type.TRANSFORM
+    ) -> persistence.Pipeline:
+
+        fqn = cfg['_target_']
+
+        transformation_src = inspect.getsource(hydra.utils.get_class(fqn))
+
+        base_package, *_ = fqn.split('.')
+        module = sys.modules.get(base_package, None)
+
+        version = None
+        if module is not None:
+            version = getattr(module, '__version__', None)
+
+        if version is None:
+            src_md5 = hashlib.md5()
+            src_md5.update(transformation_src.encode())
+            version = src_md5.hexdigest()
+
+        transformation = self._get_dao(
+            persistence.Transformation,
+            and_(
+                persistence.Transformation.fqn == fqn,
+                persistence.Transformation.version == version,
+                persistence.Transformation.type_ == type_
+            ),
+            fqn=fqn,
+            version=version,
+            source=transformation_src,
+            type_=type_
+        )
+
+        transformation_sequence = persistence.TransformationSequence(
+            pipeline=pipeline,
+            transformation=transformation,
+            position=position
+        )
+        self._assign_hyper_parameters(transformation_sequence, cfg)
+
+        pipeline.transformations.append(transformation_sequence)
+
+        return pipeline
+
+    def _assign_hyper_parameters(
+        self,
+        transformation_sequence: persistence.TransformationSequence,
+        cfg: DictConfig
+    ) -> persistence.TransformationSequence:
+
+        for name, value in cfg.items():
+            if name == '_target_':
+                continue
+
+            hyper_parameter = self._get_dao(
+                persistence.HyperParameter,
+                condition=(persistence.HyperParameter.name == name),
+                name=name
+            )
+
+            hyper_parameter_value = persistence.HyperParameterValue(
+                transformation=transformation_sequence,
+                hyper_parameter=hyper_parameter,
+                value=str(value)
+            )
+            transformation_sequence.hyper_parameters.append(hyper_parameter_value)
+
+        return transformation_sequence
+
     @property
     def db_connection(self):
         return self._session
@@ -375,3 +419,11 @@ class RegulAS(metaclass=Singleton):
     @staticmethod
     def log(level, msg, *args, **kwargs):
         RegulAS._logger.log(level, msg, *args, **kwargs)
+
+    @staticmethod
+    def dump_ndarray(data: np.ndarray) -> bytes:
+        buf = io.BytesIO()
+        np.save(buf, data)
+        buf.seek(0)
+
+        return buf.read()
