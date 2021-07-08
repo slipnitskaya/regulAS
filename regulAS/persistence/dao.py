@@ -6,7 +6,7 @@ from sqlalchemy.sql.functions import now
 from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlalchemy.orm import Session, relationship, declarative_base
 
-from sqlalchemy import Enum, Float, Column, String, Boolean, Integer, DateTime, ForeignKey
+from sqlalchemy import Enum, Float, Column, String, Boolean, Integer, DateTime, ForeignKey, LargeBinary
 
 
 class BaseTable(object):
@@ -37,6 +37,20 @@ def create_schema(url: URL, engine: Session):
         RegulASTable.metadata.create_all(engine)
 
 
+class Experiment(RegulASTable):
+
+    __tablename__ = 'Experiment'
+
+    name = Column('name', String(1024))
+    data_idx = Column('data_id', ForeignKey('Data.ID'))
+    config = Column('config', String(65536))
+    md5 = Column('md5', String(32), unique=True)
+    random_seed = Column('random_seed', Integer)
+
+    data = relationship('Data', back_populates='experiments', uselist=False)
+    pipelines = relationship('Pipeline', back_populates='experiment')
+
+
 class Data(RegulASTable):
 
     __tablename__ = 'Data'
@@ -56,9 +70,12 @@ class Pipeline(RegulASTable):
 
     experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
     success = Column('success', Boolean, nullable=False)
+    fold = Column('fold', Integer, default=None)
 
+    experiment = relationship('Experiment', back_populates='pipelines', uselist=False)
     transformations = relationship('TransformationSequence', back_populates='pipeline')
-    experiment = relationship('Experiment', back_populates='pipelines')
+    predictions = relationship('Prediction', back_populates='pipeline')
+    feature_scores = relationship('FeatureRanking', back_populates='pipeline')
 
 
 class Transformation(RegulASTable):
@@ -111,42 +128,25 @@ class HyperParameterValue(RegulASTable):
     hyper_parameter = relationship('HyperParameter', back_populates='transformations')
 
 
-class FeatureRanking(RegulASTable):
-
-    __tablename__ = 'FeatureRanking'
-
-    experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
-    feature = Column('feature', String(128))
-    score = Column('score', Float)
-
-    experiment = relationship('Experiment', back_populates='feature_scores')
-
-
 class Prediction(RegulASTable):
 
     __tablename__ = 'Prediction'
 
-    experiment_idx = Column('experiment_id', ForeignKey('Experiment.ID'))
+    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
     sample_name = Column('sample_name', String(128))
-    true_value = Column('true_value', Float)
-    predicted_value = Column('predicted_value', Float)
+    true_value = Column('true_value', LargeBinary)
+    predicted_value = Column('predicted_value', LargeBinary)
     training = Column('training', Integer, nullable=False)
-    fold = Column('fold', Integer)
 
-    experiment = relationship('Experiment', back_populates='predictions')
+    pipeline = relationship('Pipeline', back_populates='predictions', uselist=False)
 
 
-class Experiment(RegulASTable):
+class FeatureRanking(RegulASTable):
 
-    __tablename__ = 'Experiment'
+    __tablename__ = 'FeatureRanking'
 
-    name = Column('name', String(1024))
-    data_idx = Column('data_id', ForeignKey('Data.ID'))
-    config = Column('config', String(65536))
-    md5 = Column('md5', String(32), unique=True)
-    random_seed = Column('random_seed', Integer)
+    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
+    feature = Column('feature', String(128))
+    score = Column('score', Float)
 
-    data = relationship('Data', back_populates='experiments')
-    pipelines = relationship('Pipeline', back_populates='experiment')
-    feature_scores = relationship('FeatureRanking', back_populates='experiment')
-    predictions = relationship('Prediction', back_populates='experiment')
+    pipeline = relationship('Pipeline', back_populates='feature_scores', uselist=False)
