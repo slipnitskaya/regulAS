@@ -1,4 +1,3 @@
-import io
 import os
 import sys
 import enum
@@ -66,14 +65,18 @@ class RegulAS(metaclass=Singleton):
 
     _experiment: persistence.Experiment
 
-    class Status(enum.Enum):
-        SUCCESS = enum.auto()
+    class InitStatus(enum.Flag):
+        NONE = enum.auto()
+        ALLOW_SUBMIT = enum.auto()
+        ALLOW_REPORTS = enum.auto()
         FAILED = enum.auto()
 
-    def __init__(self):
-        super(RegulAS, self).__init__()
+    @property
+    def db_connection(self):
+        return self._session
 
     def init(self, cfg: DictConfig):
+        self._tasks = dict()
         self._num_processes = cfg.num_processes or mp.cpu_count()
 
         db_url: URL = make_url(cfg.database.url)
@@ -90,68 +93,116 @@ class RegulAS(metaclass=Singleton):
 
         persistence.create_schema(db_url, self._session.bind)
 
-        data = self._init_data(cfg)
+        init_status = self.InitStatus.NONE
 
-        cfg_str = OmegaConf.to_yaml(cfg)
-        cfg_str_md5 = hashlib.md5()
-        cfg_str_md5.update(cfg_str.encode())
-        cfg_str_md5.update(cfg.experiment.name.encode())
-        cfg_str_md5.update(data.md5.encode())
-        experiment_md5 = cfg_str_md5.hexdigest()
+        if cfg.experiment.pipelines:
+            data = self._init_data(cfg)
 
-        if self.db_connection.query(
-            persistence.Experiment
-        ).filter(
-            persistence.Experiment.md5 == experiment_md5
-        ).first() is not None:
-            self.log(
-                logging.WARNING,
-                f'Experiment "{cfg.experiment.name}" (unique ID, MD5): {experiment_md5}) '
-                'is already present in the database. Skipping.'
-            )
-            return self.Status.FAILED
+            self._train_ids, self._test_ids = list(), list()
+            for train_ids, test_ids in self._splitter.split(self._samples, self._targets, *self._other):
+                self._train_ids.append(train_ids)
+                self._test_ids.append(test_ids)
 
-        self._experiment = persistence.Experiment(
-            name=cfg.experiment.name,
-            data=data,
-            config=cfg_str,
-            md5=experiment_md5,
-            random_seed=cfg.random_state
+            cfg_str = OmegaConf.to_yaml(cfg)
+            experiment_md5 = hashlib.md5()
+            experiment_md5.update(cfg_str.encode())
+            experiment_md5.update(data.md5.encode())
+            experiment_md5 = experiment_md5.hexdigest()
+
+            if self.db_connection.query(
+                    persistence.Experiment
+            ).filter(
+                persistence.Experiment.md5 == experiment_md5
+            ).first() is not None:
+                self.log(
+                    logging.WARNING,
+                    f'Experiment "{cfg.experiment.name}" (unique ID, MD5): {experiment_md5}) '
+                    'is already present in the database. Skipping.'
+                )
+
+                init_status = self.InitStatus.FAILED
+            else:
+                self._experiment = persistence.Experiment(
+                    name=cfg.experiment.name,
+                    data=data,
+                    config=cfg_str,
+                    md5=experiment_md5,
+                    random_seed=cfg.random_state
+                )
+
+                self.db_connection.add(self._experiment)
+                self.db_connection.commit()
+
+                init_status |= self.InitStatus.ALLOW_SUBMIT
+
+        if cfg.experiment.reports:
+            init_status |= self.InitStatus.ALLOW_REPORTS
+
+        return init_status
+
+    @staticmethod
+    def log(level, msg, *args, **kwargs):
+        RegulAS._logger.log(level, msg, *args, **kwargs)
+
+    def submit(
+        self,
+        tasks: Collection[DictConfig]
+    ) -> None:
+
+        self.log(
+            logging.INFO,
+            f'{len(tasks)} tasks were prepared for '
+            f'{self._splitter.n_splits}-fold cross-validation '
+            f'using {self._num_processes} workers '
+            f'({len(tasks) * self._splitter.n_splits} tasks overall)'
         )
 
-        self.db_connection.add(self._experiment)
-        self.db_connection.commit()
+        task_idx = 1
+        for task in tasks:
+            for fold in range(self._splitter.n_splits):
+                self._tasks[task_idx] = task_idx, task, fold
+                task_idx += 1
 
-        self._train_ids, self._test_ids = list(), list()
-        for train_ids, test_ids in self._splitter.split(self._samples, self._targets, *self._other):
-            self._train_ids.append(train_ids)
-            self._test_ids.append(test_ids)
+        with mp.Pool(
+            processes=self._num_processes,
+            initializer=self._init_pool,
+            initargs=(self._samples, self._targets, self._train_ids, self._test_ids)
+        ) as pool:
 
-        self._tasks = dict()
+            self._num_tasks = len(self._tasks)
+            self._num_finished = 0
 
-        return self.Status.SUCCESS
+            for idx, task in self._tasks.items():
+                pool.apply_async(func=self._run_task, args=task, callback=self._process_task_result)
+                self.log(logging.INFO, f'Task {idx}/{self._num_tasks} has been submitted.')
+
+            pool.close()
+            pool.join()
 
     def _init_data(self, cfg: DictConfig) -> persistence.Data:
+        data = None
+
         self._dataset = hydra.utils.instantiate(cfg.experiment.dataset)
         self._splitter = hydra.utils.instantiate(cfg.experiment.split)
 
-        self._samples, self._targets, *self._other = self._dataset.load()
+        if self._dataset is not None:
+            self._samples, self._targets, *self._other = self._dataset.load()
 
-        data_md5 = self._dataset.md5
-        data = self.db_connection.query(persistence.Data).filter(persistence.Data.md5 == data_md5).first()
-        if data is None:
-            data = persistence.Data(
-                name=self._dataset.name,
-                meta=self._dataset.meta,
-                num_samples=self._dataset.num_samples,
-                num_features=self._dataset.num_features,
-                md5=data_md5
-            )
+            data_md5 = self._dataset.md5
+            data = self.db_connection.query(persistence.Data).filter(persistence.Data.md5 == data_md5).first()
+            if data is None:
+                data = persistence.Data(
+                    name=self._dataset.name,
+                    meta=self._dataset.meta,
+                    num_samples=self._dataset.num_samples,
+                    num_features=self._dataset.num_features,
+                    md5=data_md5
+                )
 
         return data
 
     @staticmethod
-    def _pool_init(
+    def _init_pool(
         samples: pd.DataFrame,
         targets: pd.DataFrame,
         train_ids: List[np.ndarray],
@@ -164,7 +215,7 @@ class RegulAS(metaclass=Singleton):
         TRAIN_IDS, TEST_IDS = train_ids, test_ids
 
     @staticmethod
-    def _runner(
+    def _run_task(
         idx: int,
         task: DictConfig,
         fold: int
@@ -206,19 +257,7 @@ class RegulAS(metaclass=Singleton):
         finally:
             return idx, fold, success, out
 
-    @staticmethod
-    def _get_feature_scores(model) -> np.ndarray:
-        scores = None
-
-        for name in RegulAS.SCORE_ATTR_NAMES:
-            scores = getattr(model, name, None)
-
-            if scores is not None:
-                break
-
-        return scores
-
-    def _process_result(
+    def _process_task_result(
         self,
         result: Tuple[
             int,
@@ -252,19 +291,19 @@ class RegulAS(metaclass=Singleton):
 
                 for idx_pred, idx_true in enumerate(self._train_ids[fold]):
                     persistence.Prediction(
+                        pipeline=pipeline,
                         sample_name=self._samples.index[idx_true],
-                        true_value=self.dump_ndarray(self._targets.iloc[idx_true].values),
-                        predicted_value=self.dump_ndarray(y_pred_train[idx_pred]),
-                        training=True,
-                        pipeline=pipeline
+                        true_value=self._targets.iloc[idx_true].values.astype(np.float16).tobytes(),
+                        predicted_value=y_pred_train[idx_pred].astype(np.float16).tobytes(),
+                        training=True
                     )
 
                 for idx_pred, idx_true in enumerate(self._test_ids[fold]):
                     persistence.Prediction(
                         pipeline=pipeline,
                         sample_name=self._samples.index[idx_true],
-                        true_value=self.dump_ndarray(self._targets.iloc[idx_true].values),
-                        predicted_value=self.dump_ndarray(y_pred_test[idx_pred]),
+                        true_value=self._targets.iloc[idx_true].values.astype(np.float16).tobytes(),
+                        predicted_value=y_pred_test[idx_pred].astype(np.float16).tobytes(),
                         training=False
                     )
 
@@ -284,41 +323,6 @@ class RegulAS(metaclass=Singleton):
             if pipeline is not None:
                 self.db_connection.add(pipeline)
                 self.db_connection.commit()
-
-    def submit(
-        self,
-        tasks: Collection[DictConfig]
-    ) -> None:
-
-        self.log(
-            logging.INFO,
-            f'{len(tasks)} tasks were prepared for '
-            f'{self._splitter.n_splits}-fold cross-validation '
-            f'using {self._num_processes} workers '
-            f'({len(tasks) * self._splitter.n_splits} tasks overall)'
-        )
-
-        task_idx = 1
-        for task in tasks:
-            for fold in range(self._splitter.n_splits):
-                self._tasks[task_idx] = task_idx, task, fold
-                task_idx += 1
-
-        with mp.Pool(
-            processes=self._num_processes,
-            initializer=self._pool_init,
-            initargs=(self._samples, self._targets, self._train_ids, self._test_ids)
-        ) as pool:
-
-            self._num_tasks = len(self._tasks)
-            self._num_finished = 0
-
-            for idx, task in self._tasks.items():
-                pool.apply_async(func=self._runner, args=task, callback=self._process_result)
-                self.log(logging.INFO, f'Task {idx}/{self._num_tasks} has been submitted.')
-
-            pool.close()
-            pool.join()
 
     def _get_dao(
         self,
@@ -412,18 +416,14 @@ class RegulAS(metaclass=Singleton):
 
         return transformation_sequence
 
-    @property
-    def db_connection(self):
-        return self._session
-
     @staticmethod
-    def log(level, msg, *args, **kwargs):
-        RegulAS._logger.log(level, msg, *args, **kwargs)
+    def _get_feature_scores(model) -> np.ndarray:
+        scores = None
 
-    @staticmethod
-    def dump_ndarray(data: np.ndarray) -> bytes:
-        buf = io.BytesIO()
-        np.save(buf, data)
-        buf.seek(0)
+        for name in RegulAS.SCORE_ATTR_NAMES:
+            scores = getattr(model, name, None)
 
-        return buf.read()
+            if scores is not None:
+                break
+
+        return scores
