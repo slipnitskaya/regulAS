@@ -1,8 +1,15 @@
 import abc
 
+import numpy as np
 import pandas as pd
 
+import msgpack
+import msgpack_numpy as m
+
 from typing import Tuple, Optional
+
+
+m.patch()
 
 
 class Loader(metaclass=abc.ABCMeta):
@@ -51,3 +58,11 @@ class Split(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def n_splits(self) -> int:
         pass
+
+
+def dump_ndarray(data: np.ndarray) -> bytes:
+    return msgpack.packb(data)
+
+
+def load_ndarray(data: bytes) -> np.ndarray:
+    return msgpack.unpackb(data)
