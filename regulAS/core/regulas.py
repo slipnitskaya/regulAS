@@ -5,11 +5,14 @@ import hashlib
 import inspect
 import logging
 import traceback
+import networkx as nx
 import multiprocessing as mp
 
 import hydra
 import numpy as np
 import pandas as pd
+
+from collections import defaultdict
 
 from typing import cast, Any, Dict, List, Type, Tuple, Union, Optional, Collection
 
@@ -21,7 +24,7 @@ from sqlalchemy.orm import Session, Query
 from sqlalchemy.engine.url import URL, make_url
 
 from regulAS import persistence
-from regulAS.utils.base import Loader, Split
+from regulAS.utils import Loader, Split, dump_ndarray
 
 
 SAMPLES: Optional[pd.DataFrame] = None
@@ -75,9 +78,10 @@ class RegulAS(metaclass=Singleton):
     def db_connection(self):
         return self._session
 
-    def init(self, cfg: DictConfig):
+    def init(self, cfg: DictConfig) -> InitStatus:
+
         self._tasks = dict()
-        self._num_processes = cfg.num_processes or mp.cpu_count()
+        self._num_processes = max(cfg.num_processes, 0) or mp.cpu_count()
 
         db_url: URL = make_url(cfg.database.url)
         db_url = URL.create(
@@ -110,7 +114,7 @@ class RegulAS(metaclass=Singleton):
             experiment_md5 = experiment_md5.hexdigest()
 
             if self.db_connection.query(
-                    persistence.Experiment
+                persistence.Experiment
             ).filter(
                 persistence.Experiment.md5 == experiment_md5
             ).first() is not None:
@@ -179,7 +183,68 @@ class RegulAS(metaclass=Singleton):
             pool.close()
             pool.join()
 
+    def generate(self, reports: DictConfig) -> None:
+
+        dependencies = defaultdict(list)
+        for report_name, report_cfg in reports.items():
+            report_dependencies = report_cfg.get('_depends_on_', dict())
+            dependencies[report_name].extend(
+                report_dependencies[name].split('@', 1)[0] for name in sorted(report_dependencies.keys())
+            )
+
+        for report_name in dependencies.keys():
+            dependencies[report_name] = list(dict.fromkeys(dependencies[report_name]))
+
+        dependency_graph = [(src, dst) for src in dependencies.keys() for dst in dependencies[src] if dst]
+        cycles = list(nx.simple_cycles(nx.DiGraph(dependency_graph)))
+        if cycles:
+            RegulAS.log(logging.ERROR, f'Circular report dependencies detected in the YAML file: {cycles}. Stopping.')
+            return
+
+        dependencies = [(src, dst) for src, dst in dependencies.items()]
+        resolution_order = list()
+        while dependencies:
+            src, dst = dependencies.pop(0)
+            if not dst or set(dst).issubset(set(resolution_order)):
+                resolution_order.append(src)
+            else:
+                dependencies.append((src, dst))
+
+        generated = dict()
+        for report_name in resolution_order:
+            self.log(logging.INFO, f'Generating "{report_name}"...')
+
+            try:
+                report_cfg = reports[report_name]
+
+                report_dependencies = report_cfg.pop('_depends_on_', dict())
+                report_dependencies = map(lambda x: x[1], sorted(report_dependencies.items(), key=lambda x: x[0]))
+
+                generator_args = list()
+                generator_kwargs = dict()
+                for dep_name in report_dependencies:
+                    dep, *field = dep_name.split('@', 1)
+
+                    report_input: pd.DataFrame = generated[dep]
+
+                    title_old = report_input.attrs.get('title', None)
+                    if title_old is not None:
+                        title_old = f'{title_old}-'
+                    else:
+                        title_old = ''
+                    report_input.attrs['title'] = f'{title_old}{report_name}-{dep}'
+
+                    generator_args.append(report_input)
+
+                generator = hydra.utils.instantiate(report_cfg)
+                generated[report_name] = generator.generate(*generator_args, **generator_kwargs)
+
+                self.log(logging.INFO, f'"{report_name}" was generated successfully.')
+            except:
+                self.log(logging.ERROR, f'"{report_name}" failed. Details:\n' + traceback.format_exc())
+
     def _init_data(self, cfg: DictConfig) -> persistence.Data:
+
         data = None
 
         self._dataset = hydra.utils.instantiate(cfg.experiment.dataset)
@@ -293,8 +358,8 @@ class RegulAS(metaclass=Singleton):
                     persistence.Prediction(
                         pipeline=pipeline,
                         sample_name=self._samples.index[idx_true],
-                        true_value=self._targets.iloc[idx_true].values.astype(np.float16).tobytes(),
-                        predicted_value=y_pred_train[idx_pred].astype(np.float16).tobytes(),
+                        true_value=dump_ndarray(self._targets.iloc[idx_true].values.astype(np.float16)),
+                        predicted_value=dump_ndarray(y_pred_train[idx_pred].astype(np.float16)),
                         training=True
                     )
 
@@ -302,8 +367,8 @@ class RegulAS(metaclass=Singleton):
                     persistence.Prediction(
                         pipeline=pipeline,
                         sample_name=self._samples.index[idx_true],
-                        true_value=self._targets.iloc[idx_true].values.astype(np.float16).tobytes(),
-                        predicted_value=y_pred_test[idx_pred].astype(np.float16).tobytes(),
+                        true_value=dump_ndarray(self._targets.iloc[idx_true].values.astype(np.float16)),
+                        predicted_value=dump_ndarray(y_pred_test[idx_pred].astype(np.float16)),
                         training=False
                     )
 
@@ -312,7 +377,7 @@ class RegulAS(metaclass=Singleton):
                         persistence.FeatureRanking(
                             pipeline=pipeline,
                             feature=feature_name,
-                            score=feature_scores[feature_idx]
+                            score=float(feature_scores[feature_idx])
                         )
             else:
                 tb = out
@@ -397,9 +462,12 @@ class RegulAS(metaclass=Singleton):
         cfg: DictConfig
     ) -> persistence.TransformationSequence:
 
+        model_hyper_parameters = list()
         for name, value in cfg.items():
             if name == '_target_':
                 continue
+
+            model_hyper_parameters.append((name, str(value)))
 
             hyper_parameter = self._get_dao(
                 persistence.HyperParameter,
@@ -413,6 +481,15 @@ class RegulAS(metaclass=Singleton):
                 value=str(value)
             )
             transformation_sequence.hyper_parameters.append(hyper_parameter_value)
+
+        model_hyper_parameters = ', '.join([
+            f'{name}: {value}' for name, value in sorted(model_hyper_parameters, key=lambda x: x[0])
+        ])
+        model_hyper_parameters = f'{{{model_hyper_parameters}}}'
+
+        hyper_parameters_md5 = hashlib.md5()
+        hyper_parameters_md5.update(model_hyper_parameters.encode())
+        transformation_sequence.md5 = hyper_parameters_md5.hexdigest()
 
         return transformation_sequence
 

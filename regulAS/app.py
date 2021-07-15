@@ -135,16 +135,17 @@ def run(cfg: DictConfig) -> None:
     init_status = RegulAS().init(cfg)
 
     if init_status & RegulAS.InitStatus.FAILED:
+        RegulAS.log(logging.WARNING, 'Stopping.')
         return
 
     if init_status & RegulAS.InitStatus.ALLOW_SUBMIT:
-        RegulAS.log(logging.INFO, 'Preparing tasks...')
+        RegulAS.log(logging.INFO, 'Preparing tasks to submit...')
         tasks = prepare_tasks(cfg)
         RegulAS().submit(tasks)
 
     if init_status & RegulAS.InitStatus.ALLOW_REPORTS:
-        # TODO: generate reports
         RegulAS.log(logging.INFO, 'Generating reports...')
+        RegulAS().generate(cfg.experiment.reports)
 
 
 if __name__ == '__main__':
