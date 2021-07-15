@@ -44,7 +44,7 @@ class Experiment(RegulASTable):
     name = Column('name', String(1024))
     data_idx = Column('data_id', ForeignKey('Data.ID'))
     config = Column('config', String(65536))
-    md5 = Column('md5', String(32), unique=True)
+    md5 = Column('md5', String(32))
     random_seed = Column('random_seed', Integer)
 
     data = relationship('Data', back_populates='experiments', uselist=False)
@@ -59,7 +59,7 @@ class Data(RegulASTable):
     meta = Column('meta', String(4096))
     num_samples = Column('num_samples', Integer)
     num_features = Column('num_features', Integer)
-    md5 = Column('md5', String(32), unique=True)
+    md5 = Column('md5', String(32))
 
     experiments = relationship('Experiment', back_populates='data')
 
@@ -101,6 +101,7 @@ class TransformationSequence(RegulASTable):
     transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
     pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
     position = Column('position', Integer, default=1)
+    md5 = Column('md5', String(32))
 
     pipeline = relationship('Pipeline', back_populates='transformations')
     transformation = relationship('Transformation', back_populates='pipelines')
