@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 import pandas as pd
 
@@ -9,7 +11,7 @@ from collections import defaultdict
 
 from sqlalchemy import and_
 
-from typing import Callable, Iterable, Optional
+from typing import Dict, List, Callable, Iterable, Optional
 
 from regulAS.core import RegulAS
 from regulAS.reports import Report
@@ -41,7 +43,7 @@ class ModelPerformanceReport(Report):
                 'Metric function is missing. Please pass a value to either`score_fn` or `loss_fn` argument.'
             )
 
-    def generate(self) -> pd.DataFrame:
+    def generate(self) -> List[Dict[str, pd.DataFrame]]:
         metric_name = f'{self.metric.__name__}:{{}}:{{}}'
 
         conn = RegulAS().db_connection
@@ -60,13 +62,22 @@ class ModelPerformanceReport(Report):
         y_true_test, y_pred_test = zip(*[(list(), list()) for _ in range(len(folds))])
         y_true_train, y_pred_train = zip(*[(list(), list()) for _ in range(len(folds))])
 
-        result = defaultdict(lambda: defaultdict(defaultdict))
+        result = defaultdict(  # data name ->
+            lambda: defaultdict(  # data MD5 ->
+                lambda: defaultdict(  # model name ->
+                    lambda: defaultdict(  # hyper-parameters MD5 ->
+                        dict  # fold -> performance objective
+                    )
+                )
+            )
+        )
 
         columns_test, columns_train = set(), set()
 
         pipeline: persistence.Pipeline
         for pipeline in pipelines:
-            data_name = f'{pipeline.experiment.data.name}:{pipeline.experiment.data.md5[-6:]}'
+            data_name = pipeline.experiment.data.name
+            data_md5 = pipeline.experiment.data.md5
 
             model = conn.query(
                 persistence.Transformation
@@ -115,7 +126,7 @@ class ModelPerformanceReport(Report):
             ])
             model_hyper_parameters = f'{{{model_hyper_parameters}}}'
 
-            model_name = f'{model.fqn}:{hyper_parameters_md5[-6:]}'
+            model_name = model.fqn
 
             predictions = conn.query(
                 persistence.Prediction
@@ -153,35 +164,48 @@ class ModelPerformanceReport(Report):
             column_test = metric_name.format('test', pipeline.fold)
             column_train = metric_name.format('train', pipeline.fold)
 
-            result[data_name][model_name]['hyper_parameters'] = model_hyper_parameters
-            result[data_name][model_name][column_test] = metric_test
-            result[data_name][model_name][column_train] = metric_train
+            result[data_name][data_md5][model_name][hyper_parameters_md5]['hyper_parameters'] = model_hyper_parameters
+            result[data_name][data_md5][model_name][hyper_parameters_md5][column_test] = metric_test
+            result[data_name][data_md5][model_name][hyper_parameters_md5][column_train] = metric_train
 
             columns_test.add(column_test)
             columns_train.add(column_train)
 
-        result = pd.DataFrame.from_dict({
-            (data_name, model_name): result[data_name][model_name]
-            for data_name in result.keys()
-            for model_name in result[data_name].keys()
-        }, orient='index')
-        result.index.set_names(['data', 'model'])
-        result.attrs['title'] = self.experiment_name
+        result = pd.DataFrame.from_dict(
+            {
+                (
+                    data_name, data_md5, model_name, hyper_parameters_md5
+                ): result[data_name][data_md5][model_name][hyper_parameters_md5]
+                for data_name in result.keys()
+                for data_md5 in result[data_name].keys()
+                for model_name in result[data_name][data_md5].keys()
+                for hyper_parameters_md5 in result[data_name][data_md5][model_name].keys()
+            },
+            orient='index'
+        )
+        result.index.set_names(['data', 'data_md5', 'model', 'hyper_parameters_md5'], inplace=True)
+        result.attrs['title'] = f'{self.experiment_name}-{self.name}'
 
-        for model_name in result.index:
-            scores_test, scores_train = result.loc[model_name, columns_test], result.loc[model_name, columns_train]
+        for index in result.index:
+            scores_test, scores_train = result.loc[index, columns_test], result.loc[index, columns_train]
 
-            mean_test, std_test = np.mean(scores_test), np.std(scores_test)
-            mean_train, std_train = np.mean(scores_train), np.std(scores_train)
+            stats = {
+                'test_mean': np.mean(scores_test), 'test_std': np.std(scores_test),
+                'train_mean': np.mean(scores_train), 'train_std': np.std(scores_train)
+            }
 
-            result.loc[model_name, metric_name.format('test', 'mean')] = mean_test
-            result.loc[model_name, metric_name.format('test', 'std')] = std_test
-            result.loc[model_name, metric_name.format('train', 'mean')] = mean_train
-            result.loc[model_name, metric_name.format('train', 'std')] = std_train
+            for split, stat in itertools.product(['test', 'train'], ['mean', 'std']):
+                result.loc[index, metric_name.format(split, stat)] = stats[f'{split}_{stat}']
 
-        return result.drop(
+        result = result.drop(
             columns=columns_test | columns_train
         ).sort_values(
             by=[metric_name.format('test', 'mean'), metric_name.format('test', 'std')],
-            ascending=not self.greater_is_better
+            ascending=[not self.greater_is_better, True]
         )
+
+        dataframes = list()
+        for data_name, df in result.groupby(level='data'):
+            dataframes.append({'df': df})
+
+        return dataframes

@@ -183,22 +183,25 @@ class RegulAS(metaclass=Singleton):
             pool.close()
             pool.join()
 
-    def generate(self, reports: DictConfig) -> None:
-
+    def generate(self, report_tasks: DictConfig) -> None:
         dependencies = defaultdict(list)
-        for report_name, report_cfg in reports.items():
+        for report_name, report_cfg in report_tasks.items():
             report_dependencies = report_cfg.get('_depends_on_', dict())
-            dependencies[report_name].extend(
-                report_dependencies[name].split('@', 1)[0] for name in sorted(report_dependencies.keys())
-            )
+            dependencies[report_name].extend(report_dependencies[name] for name in sorted(report_dependencies.keys()))
 
         for report_name in dependencies.keys():
             dependencies[report_name] = list(dict.fromkeys(dependencies[report_name]))
 
+        src, dst = set(dependencies.keys()), {dst for dep in dependencies.values() for dst in dep}
+        missing_deps = dst - src
+        if missing_deps:
+            RegulAS.log(logging.ERROR, f'Missing report dependencies detected: {missing_deps}. Stopping.')
+            return
+
         dependency_graph = [(src, dst) for src in dependencies.keys() for dst in dependencies[src] if dst]
         cycles = list(nx.simple_cycles(nx.DiGraph(dependency_graph)))
         if cycles:
-            RegulAS.log(logging.ERROR, f'Circular report dependencies detected in the YAML file: {cycles}. Stopping.')
+            RegulAS.log(logging.ERROR, f'Circular report dependencies detected: {cycles}. Stopping.')
             return
 
         dependencies = [(src, dst) for src, dst in dependencies.items()]
@@ -210,41 +213,49 @@ class RegulAS(metaclass=Singleton):
             else:
                 dependencies.append((src, dst))
 
-        generated = dict()
+        generated = defaultdict(list)
         for report_name in resolution_order:
             self.log(logging.INFO, f'Generating "{report_name}"...')
 
             try:
-                report_cfg = reports[report_name]
+                report_cfg = report_tasks[report_name]
 
                 report_dependencies = report_cfg.pop('_depends_on_', dict())
+                num_deps = len(report_dependencies)
                 report_dependencies = map(lambda x: x[1], sorted(report_dependencies.items(), key=lambda x: x[0]))
 
-                generator_args = list()
-                generator_kwargs = dict()
-                for dep_name in report_dependencies:
-                    dep, *field = dep_name.split('@', 1)
-
-                    report_input: pd.DataFrame = generated[dep]
-
-                    title_old = report_input.attrs.get('title', None)
-                    if title_old is not None:
-                        title_old = f'{title_old}-'
-                    else:
-                        title_old = ''
-                    report_input.attrs['title'] = f'{title_old}{report_name}-{dep}'
-
-                    generator_args.append(report_input)
-
                 generator = hydra.utils.instantiate(report_cfg)
-                generated[report_name] = generator.generate(*generator_args, **generator_kwargs)
+                generator.name = report_name
+                generator_param_names = list(inspect.signature(generator.generate).parameters)
+
+                if num_deps > 0:
+                    for dep_name in report_dependencies:
+                        generator_kwargs = dict()
+
+                        dep_outputs = generated[dep_name]
+                        for dep_output in dep_outputs:
+                            generator_kwargs = {
+                                **generator_kwargs,
+                                **{
+                                    param_name: dep_output[param_name]
+                                    for param_name in generator_param_names
+                                    if param_name in dep_output
+                                }
+                            }
+
+                            output = generator.generate(**generator_kwargs)
+                            if output is not None:
+                                generated[report_name].extend(output)
+                else:
+                    output = generator.generate()
+                    if output is not None:
+                        generated[report_name].extend(output)
 
                 self.log(logging.INFO, f'"{report_name}" was generated successfully.')
             except:
                 self.log(logging.ERROR, f'"{report_name}" failed. Details:\n' + traceback.format_exc())
 
     def _init_data(self, cfg: DictConfig) -> persistence.Data:
-
         data = None
 
         self._dataset = hydra.utils.instantiate(cfg.experiment.dataset)
@@ -503,4 +514,4 @@ class RegulAS(metaclass=Singleton):
             if scores is not None:
                 break
 
-        return scores
+        return scores.flatten()
