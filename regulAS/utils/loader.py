@@ -6,7 +6,7 @@ import pandas as pd
 
 from typing import Tuple, Optional
 
-from .base import Loader
+from regulAS.utils import Loader
 
 
 class PickleLoader(Loader):
@@ -39,7 +39,7 @@ class PickleLoader(Loader):
 
     @property
     def name(self):
-        return f'{super(PickleLoader, self).name} ({os.path.basename(self.path_to_file)})'
+        return f'{super(PickleLoader, self).name}-{os.path.basename(self.path_to_file)}'
 
     @property
     def num_samples(self) -> int:
