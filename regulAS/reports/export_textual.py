@@ -28,7 +28,7 @@ class ExportCSV(Report):
             index = df.columns
 
         data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*index)))
-        df_title = '-'.join([df.attrs.get('title', ''), data_name, data_md5])
+        df_title = '-'.join([df.attrs.get('title', ''), self.name, data_name, data_md5])
 
         path_to_output = os.path.abspath(
             os.path.join(
