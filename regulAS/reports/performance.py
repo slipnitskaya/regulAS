@@ -32,6 +32,10 @@ class ModelPerformanceReport(Report):
         super(ModelPerformanceReport, self).__init__()
 
         self.experiment_name = experiment_name
+
+        if score_fn is not None and loss_fn is not None:
+            raise ValueError('Ambiguous metric function. Please choose either `score_fn` of `loss_fn`.')
+
         if score_fn is not None:
             self.metric = hydra.utils.get_method(score_fn)
             self.greater_is_better = True
@@ -74,6 +78,7 @@ class ModelPerformanceReport(Report):
 
         columns_test, columns_train = set(), set()
 
+        model_aliases = dict()
         pipeline: persistence.Pipeline
         for pipeline in pipelines:
             data_name = pipeline.experiment.data.name
@@ -82,7 +87,8 @@ class ModelPerformanceReport(Report):
             model = conn.query(
                 persistence.Transformation
             ).join(
-                persistence.Transformation.pipelines, persistence.Pipeline
+                persistence.Transformation.pipelines,
+                persistence.Pipeline
             ).filter(
                 and_(
                     persistence.Pipeline.idx == pipeline.idx,
@@ -105,8 +111,9 @@ class ModelPerformanceReport(Report):
                 )
             )
 
-            hyper_parameters_md5 = conn.query(
-                persistence.TransformationSequence
+            alias, hyper_parameters_md5 = conn.query(
+                persistence.TransformationSequence.alias,
+                persistence.TransformationSequence.md5
             ).join(
                 persistence.Transformation,
                 persistence.Pipeline
@@ -115,7 +122,7 @@ class ModelPerformanceReport(Report):
                     persistence.Transformation.idx == model.idx,
                     persistence.Pipeline.idx == pipeline.idx
                 )
-            ).first().md5
+            ).first()
 
             model_hyper_parameters = list()
             for name, value in hyper_parameters:
@@ -127,6 +134,8 @@ class ModelPerformanceReport(Report):
             model_hyper_parameters = f'{{{model_hyper_parameters}}}'
 
             model_name = model.fqn
+
+            model_aliases[(model_name, hyper_parameters_md5)] = alias
 
             predictions = conn.query(
                 persistence.Prediction
@@ -185,6 +194,7 @@ class ModelPerformanceReport(Report):
         )
         result.index.set_names(['data', 'data_md5', 'model', 'hyper_parameters_md5'], inplace=True)
         result.attrs['title'] = f'{self.experiment_name}-{self.name}'
+        result.attrs['model_aliases'] = model_aliases
 
         for index in result.index:
             scores_test, scores_train = result.loc[index, columns_test], result.loc[index, columns_train]
