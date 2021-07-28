@@ -98,8 +98,9 @@ class TransformationSequence(RegulASTable):
 
     __tablename__ = 'TransformationSequence'
 
-    transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
     pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
+    transformation_idx = Column('transformation_id', ForeignKey('Transformation.ID'))
+    alias = Column('alias', String(128))
     position = Column('position', Integer, default=1)
     md5 = Column('md5', String(32))
 

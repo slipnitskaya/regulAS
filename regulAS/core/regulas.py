@@ -356,10 +356,11 @@ class RegulAS(metaclass=Singleton):
             _, task, *_ = self._tasks[idx]
 
             for position, (name, transformation_cfg) in enumerate(task.transformations.items(), 1):
-                self._assign_transformation(pipeline, transformation_cfg, position)
+                self._assign_transformation(pipeline, transformation_cfg, name, position)
 
-            model_cfg = next(iter(task.model.values()))
-            self._assign_transformation(pipeline, model_cfg, type_=persistence.Transformation.Type.MODEL)
+            model_name = next(iter(task.model.keys()))
+            model_cfg = task.model[model_name]
+            self._assign_transformation(pipeline, model_cfg, model_name, type_=persistence.Transformation.Type.MODEL)
 
             if success:
                 y_pred_train, y_pred_test, feature_scores = cast(Tuple[np.ndarray, np.ndarray, np.ndarray], out)
@@ -423,11 +424,15 @@ class RegulAS(metaclass=Singleton):
         self,
         pipeline: persistence.Pipeline,
         cfg: DictConfig,
+        alias: Optional[str] = None,
         position: int = 1,
         type_: persistence.Transformation.Type = persistence.Transformation.Type.TRANSFORM
     ) -> persistence.Pipeline:
 
         fqn = cfg['_target_']
+
+        if alias is None:
+            alias = fqn.rsplit('.', 1)[-1]
 
         transformation_src = inspect.getsource(hydra.utils.get_class(fqn))
 
@@ -459,6 +464,7 @@ class RegulAS(metaclass=Singleton):
         transformation_sequence = persistence.TransformationSequence(
             pipeline=pipeline,
             transformation=transformation,
+            alias=alias,
             position=position
         )
         self._assign_hyper_parameters(transformation_sequence, cfg)
