@@ -30,14 +30,12 @@ class ExportCSV(Report):
         data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*index)))
         df_title = '-'.join([df.attrs.get('title', ''), self.name, data_name, data_md5])
 
-        path_to_output = os.path.abspath(
-            os.path.join(
-                hydra.utils.get_original_cwd(),
-                os.path.basename(self.output_dir),
-                f'{df_title}.csv'
-            )
-        )
+        if os.path.isabs(self.output_dir):
+            output_dir = self.output_dir
+        else:
+            output_dir = os.path.join(hydra.utils.get_original_cwd(), self.output_dir)
 
+        path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.csv'))
         os.makedirs(os.path.dirname(path_to_output), exist_ok=True)
 
         df.to_csv(
