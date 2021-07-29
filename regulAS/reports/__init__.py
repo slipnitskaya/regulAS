@@ -1,4 +1,8 @@
 from .base import Report
-from .export_textual import ExportCSV
+
 from .ranking import FeatureRankingReport
 from .performance import ModelPerformanceReport
+
+from .export_textual import ExportCSV
+from .export_visual import ModelPerformanceBarGraphReport
+from .export_visual import ModelPredictionsScatterPlotReport
