@@ -110,7 +110,7 @@ def prepare_tasks(cfg: DictConfig) -> List[DictConfig]:
     return tasks
 
 
-@hydra.main(config_path='conf', config_name='default')
+@hydra.main(config_path=os.path.join(os.path.dirname(__file__), 'conf'), config_name='default')
 def run(cfg: DictConfig) -> None:
     OmegaConf.set_struct(cfg, False)
 
