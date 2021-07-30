@@ -285,7 +285,134 @@ class ModelPredictionsScatterPlotReport(Report):
             else:
                 output_dir = os.path.join(hydra.utils.get_original_cwd(), self.output_dir)
 
-            path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.csv'))
+            path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.png'))
+            os.makedirs(os.path.dirname(path_to_output), exist_ok=True)
+
+            plt.savefig(fname=path_to_output, dpi=self.dpi, bbox_inches='tight')
+            plt.close(fig)
+
+
+class FeatureRankingBarGraphReport(Report):
+
+    fonttitle: int = 18
+    fontsize: int = 14
+    labelsize: int = None
+
+    def __init__(
+        self,
+        output_dir: str,
+        top_k: Optional[int] = None,
+        fig_width: Optional[float] = None,
+        fig_height: Optional[float] = None,
+        dpi: Optional[float] = None,
+        title: Optional[str] = None,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None
+    ):
+        super(FeatureRankingBarGraphReport, self).__init__()
+
+        self.output_dir = output_dir
+        self.top_k = top_k
+        self.fig_width = fig_width
+        self.fig_height = fig_height
+        self.dpi = dpi
+        self.title = title
+        self.x_label = x_label
+        self.y_label = y_label
+
+    @property
+    def figsize(self):
+        if self.fig_width is None and self.fig_height is None:
+            return None
+
+        if self.fig_width is not None and self.fig_height is None:
+            self.fig_height = self.fig_width
+
+        if self.fig_width is None and self.fig_height is not None:
+            self.fig_width = self.fig_height
+
+    def generate(self, df: pd.DataFrame) -> None:
+        if isinstance(df.index, pd.MultiIndex):
+            index = df.index
+            axis = 0
+        else:
+            index = df.columns
+            axis = 1
+
+        data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*index)))
+        score_groups = df.droplevel(
+            level=['data', 'data_md5'], axis=axis
+        ).groupby(
+            level=['model', 'hyper_parameters_md5'], axis=axis
+        )
+
+        for (model_fqn, hyper_parameters_md5), feature_scores_df in score_groups:
+            model_alias = df.attrs['model_aliases'][(model_fqn, hyper_parameters_md5)]
+
+            feature_scores_df = feature_scores_df.droplevel(
+                level=['model', 'hyper_parameters_md5'], axis=axis
+            ).sort_values(
+                by=['score:mean', 'score:std'],
+                key=abs,
+                ascending=False
+            )
+
+            if self.top_k is not None:
+                feature_scores_df = feature_scores_df.iloc[:self.top_k]
+
+            errors = np.stack(
+                (
+                    np.where(
+                        (feature_scores_df['score:mean'].abs() - feature_scores_df['score:std']) > 0.0,
+                        feature_scores_df['score:std'],
+                        feature_scores_df['score:mean'].abs()
+                    ),
+                    feature_scores_df['score:std']
+                ),
+                axis=1
+            ).T
+            colors = ['C3' if value > 0.0 else 'C0' for value in feature_scores_df['score:mean'].values]
+
+            fig, ax = plt.subplots(1, 1, figsize=self.figsize, dpi=self.dpi)
+
+            feature_scores_df['score:mean'].abs().plot(
+                ax=ax,
+                kind='barh',
+                legend=False,
+                xerr=errors,
+                color=colors
+            )
+
+            plt.title(self.title.format(model_alias=model_alias), fontsize=self.fonttitle, y=1.01)
+            ax.set_xlabel(self.x_label, fontsize=self.fontsize)
+            ax.set_ylabel(self.y_label, fontsize=self.fontsize)
+            if self.labelsize is not None:
+                ax.tick_params(labelsize=self.labelsize)
+
+            ax.set_yticklabels([
+                f'{feature}\n({score:.3e})'
+                for feature, score
+                in zip(feature_scores_df.index, feature_scores_df['score:mean'])
+            ])
+
+            plt.gca().invert_yaxis()
+            plt.grid(axis='x')
+
+            df_title = '-'.join([
+                df.attrs.get('title', ''),
+                self.name,
+                model_alias,
+                hyper_parameters_md5,
+                data_name,
+                data_md5
+            ])
+
+            if os.path.isabs(self.output_dir):
+                output_dir = self.output_dir
+            else:
+                output_dir = os.path.join(hydra.utils.get_original_cwd(), self.output_dir)
+
+            path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.png'))
             os.makedirs(os.path.dirname(path_to_output), exist_ok=True)
 
             plt.savefig(fname=path_to_output, dpi=self.dpi, bbox_inches='tight')
