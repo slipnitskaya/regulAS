@@ -109,6 +109,8 @@ class ModelPerformanceBarGraphReport(Report):
         ax.set_ylabel(self.y_label, fontsize=self.fontsize)
         ax.set_ylim(*self.y_lim)
 
+        plt.grid(axis='y')
+
         data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*df.index)))
         df_title = '-'.join([df.attrs.get('title', ''), self.name, data_name, data_md5])
 
@@ -265,6 +267,8 @@ class ModelPredictionsScatterPlotReport(Report):
             fitted = self._fit_line_to_points(y_true, y_pred, val_min=bnd_low, val_max=bnd_high)
             plt.plot(*fitted, c='r', linewidth=1.0, label='Linear fitting')
             plt.legend(loc='upper left')
+            plt.xlim(left=0.0, right=1.0)
+            plt.ylim(bottom=0.0, top=bnd_high)
 
             df_title = '-'.join([
                 df.attrs.get('title', ''),
