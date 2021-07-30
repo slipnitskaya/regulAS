@@ -119,7 +119,7 @@ class ModelPerformanceBarGraphReport(Report):
         else:
             output_dir = os.path.join(hydra.utils.get_original_cwd(), self.output_dir)
 
-        path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.csv'))
+        path_to_output = os.path.abspath(os.path.join(output_dir, f'{df_title}.png'))
         os.makedirs(os.path.dirname(path_to_output), exist_ok=True)
 
         plt.savefig(path_to_output, bbox_inches='tight')
