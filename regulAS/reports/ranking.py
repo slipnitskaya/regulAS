@@ -62,6 +62,7 @@ class FeatureRankingReport(Report):
             reverse=not self.sort_ascending
         )
 
+        model_aliases = dict()
         columns_score = set()
         num_models_chosen = 0
         for model_name, model_df in perf_groups:
@@ -85,7 +86,8 @@ class FeatureRankingReport(Report):
             num_rankings_found = 0
             for pipeline in pipelines:
                 ranking = conn.query(
-                    persistence.FeatureRanking.feature, persistence.FeatureRanking.score
+                    persistence.FeatureRanking.feature,
+                    persistence.FeatureRanking.score
                 ).filter(
                     persistence.FeatureRanking.pipeline == pipeline
                 ).order_by(
@@ -93,14 +95,28 @@ class FeatureRankingReport(Report):
                 )
 
                 if ranking is not None:
+                    alias, = conn.query(
+                        persistence.TransformationSequence.alias
+                    ).join(
+                        persistence.Transformation,
+                        persistence.Pipeline
+                    ).filter(
+                        and_(
+                            persistence.Transformation.fqn == model_name,
+                            persistence.Pipeline.idx == pipeline.idx
+                        )
+                    ).first()
+
+                    model_aliases[(model_name, hyper_parameters_md5)] = alias
+
                     if self.top_k_features is not None:
                         ranking = ranking.limit(self.top_k_features)
 
                     column_score = f'score:{pipeline.fold}'
-                    for feature_name, score in ranking:
-                        result[data_name][data_md5][model_name][hyper_parameters_md5][column_score][feature_name] = score
-                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:mean'][feature_name] = np.nan
-                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:std'][feature_name] = np.nan
+                    for feature, score in ranking:
+                        result[data_name][data_md5][model_name][hyper_parameters_md5][column_score][feature] = score
+                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:mean'][feature] = np.nan
+                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:std'][feature] = np.nan
 
                     columns_score.add(column_score)
                     num_rankings_found += 1
@@ -125,6 +141,7 @@ class FeatureRankingReport(Report):
             orient='columns'
         )
         result.attrs['title'] = '-'.join([df.attrs.get('title', ''), self.name])
+        result.attrs['model_aliases'] = model_aliases
         result.index.set_names(['feature'], inplace=True)
         result.columns.set_names(['data', 'data_md5', 'model', 'hyper_parameters_md5', 'score'], inplace=True)
 
