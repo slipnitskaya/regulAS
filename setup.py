@@ -27,6 +27,8 @@ setup(
         'sqlalchemy>=1.4.17',
         'msgpack>=1.0.2',
         'msgpack-numpy>=0.4.6.1',
-        'requests>=2.26.0'
+        'requests>=2.26.0',
+        'pyensembl>=1.9.1',
+        'tqdm>=4.46.0'
     ]
 )

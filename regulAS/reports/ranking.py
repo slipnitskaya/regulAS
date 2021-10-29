@@ -1,3 +1,4 @@
+import os
 import difflib
 import itertools
 
@@ -8,6 +9,7 @@ import regulAS.persistence as persistence
 
 from collections import defaultdict
 
+from pyensembl import EnsemblRelease
 from sqlalchemy import and_, func
 
 from typing import Dict, List, Tuple, Optional
@@ -16,7 +18,13 @@ from regulAS.core import RegulAS
 from regulAS.reports import Report
 
 
+os.environ['PYENSEMBL_CACHE_DIR'] = os.path.expanduser('~/.local/cache/pyensembl')
+
+
 class FeatureRankingReport(Report):
+
+    ENSEMBLE_RELEASE: int = 102
+    SPECIES: str = 'homo_sapiens'
 
     def __init__(
         self,
@@ -24,7 +32,8 @@ class FeatureRankingReport(Report):
         sort_by: str,
         sort_ascending: bool = True,
         top_k_models: Optional[int] = None,
-        top_k_features: Optional[int] = None
+        top_k_features: Optional[int] = None,
+        symbolic_aliases: bool = False
     ):
         super(FeatureRankingReport, self).__init__()
 
@@ -33,6 +42,12 @@ class FeatureRankingReport(Report):
         self.sort_ascending = sort_ascending
         self.top_k_models = top_k_models
         self.top_k_features = top_k_features
+        self.symbolic_aliases = symbolic_aliases
+
+        if self.symbolic_aliases:
+            self._ensembl = EnsemblRelease(release=self.ENSEMBLE_RELEASE, species=self.SPECIES)
+            self._ensembl.download()
+            self._ensembl.index()
 
     def generate(self, df: pd.DataFrame) -> List[Dict[str, pd.DataFrame]]:
         conn = RegulAS().db_connection
@@ -114,6 +129,12 @@ class FeatureRankingReport(Report):
 
                     column_score = f'score:{pipeline.fold}'
                     for feature, score in ranking:
+                        if self.symbolic_aliases:
+                            try:
+                                feature = self._ensembl.gene_name_of_gene_id(feature)
+                            except ValueError:
+                                pass
+
                         result[data_name][data_md5][model_name][hyper_parameters_md5][column_score][feature] = score
                         result[data_name][data_md5][model_name][hyper_parameters_md5]['score:mean'][feature] = np.nan
                         result[data_name][data_md5][model_name][hyper_parameters_md5]['score:std'][feature] = np.nan
