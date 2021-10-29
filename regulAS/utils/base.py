@@ -1,4 +1,5 @@
 import abc
+import logging
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,8 @@ m.patch()
 
 
 class Loader(metaclass=abc.ABCMeta):
+
+    log = staticmethod(logging.log)
 
     def __init__(self, name: str, meta: Optional[str] = None):
         super(Loader, self).__init__()

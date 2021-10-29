@@ -18,7 +18,7 @@ setup(
     install_requires=[
         'networkx>=2.5',
         'numpy>=1.19.2',
-        'sklearn>=0.24.2',
+        'scikit-learn>=0.24.2',
         'pandas>=1.2.2',
         'matplotlib>=3.1.3',
         'omegaconf>=2.1.0',
@@ -26,6 +26,7 @@ setup(
         'hydra-colorlog>=1.1.0',
         'sqlalchemy>=1.4.17',
         'msgpack>=1.0.2',
-        'msgpack-numpy>=0.4.6.1'
+        'msgpack-numpy>=0.4.6.1',
+        'requests>=2.26.0'
     ]
 )
