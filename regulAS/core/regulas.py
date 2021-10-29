@@ -8,7 +8,7 @@ import traceback
 import networkx as nx
 import multiprocessing as mp
 
-import hydra
+import hydra  # noqa
 import numpy as np
 import pandas as pd
 
@@ -78,7 +78,10 @@ class RegulAS(metaclass=Singleton):
     def db_connection(self):
         return self._session
 
-    def init(self, cfg: DictConfig) -> InitStatus:
+    def init(
+        self,
+        cfg: DictConfig
+    ) -> InitStatus:
 
         self._tasks = dict()
         self._num_processes = max(cfg.num_processes, 0) or mp.cpu_count()
@@ -99,9 +102,9 @@ class RegulAS(metaclass=Singleton):
 
         init_status = self.InitStatus.NONE
 
-        if cfg.experiment.pipelines:
-            data = self._init_data(cfg)
+        data = self._init_data(cfg)
 
+        if cfg.experiment.pipelines:
             self._train_ids, self._test_ids = list(), list()
             for train_ids, test_ids in self._splitter.split(self._samples, self._targets, *self._other):
                 self._train_ids.append(train_ids)
@@ -114,7 +117,7 @@ class RegulAS(metaclass=Singleton):
             experiment_md5 = experiment_md5.hexdigest()
 
             if self.db_connection.query(
-                persistence.Experiment
+                    persistence.Experiment
             ).filter(
                 persistence.Experiment.md5 == experiment_md5
             ).first() is not None:
@@ -183,7 +186,11 @@ class RegulAS(metaclass=Singleton):
             pool.close()
             pool.join()
 
-    def generate(self, report_tasks: DictConfig) -> None:
+    def generate(
+        self,
+        report_tasks: DictConfig
+    ) -> None:
+
         dependencies = defaultdict(list)
         for report_name, report_cfg in report_tasks.items():
             report_dependencies = report_cfg.get('_depends_on_', dict())
@@ -255,7 +262,11 @@ class RegulAS(metaclass=Singleton):
             except:
                 self.log(logging.ERROR, f'"{report_name}" failed. Details:\n' + traceback.format_exc())
 
-    def _init_data(self, cfg: DictConfig) -> persistence.Data:
+    def _init_data(
+        self,
+        cfg: DictConfig
+    ) -> persistence.Data:
+
         data = None
 
         self._dataset = hydra.utils.instantiate(cfg.experiment.dataset)
@@ -518,6 +529,7 @@ class RegulAS(metaclass=Singleton):
             scores = getattr(model, name, None)
 
             if scores is not None:
+                scores = scores.flatten()
                 break
 
-        return scores.flatten()
+        return scores
