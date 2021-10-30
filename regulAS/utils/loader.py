@@ -55,18 +55,19 @@ class CsvGzReader(object):
     @staticmethod
     def _read_gz(path_to_gz: str) -> Tuple[int, str]:
         with gzip.open(path_to_gz, 'r') as gz:
+            gz = filter(lambda l: l[:6] != b'TARGET', gz)
             for idx, line in enumerate(gz):
                 yield idx, line.decode().strip('\r\n')
 
     @staticmethod
-    def _parse_worker(args) -> Tuple[int, str, List[Union[str, float]]]:
+    def _parse_worker(args) -> Tuple[int, str, np.ndarray]:
         idx, line, sep = args
 
         line_idx, *cols = line.split(sep)
         try:
             cols = np.array([float(val) for val in cols], dtype=np.float32)
         except ValueError:
-            pass
+            cols = np.array(cols)
 
         return idx, line_idx, cols
 
@@ -82,7 +83,7 @@ class CsvGzReader(object):
                 indices.append(line_idx)
 
         df = pd.DataFrame(index=indices, columns=columns, dtype=np.float32)
-        for idx, line_idx in enumerate(tqdm.tqdm(indices, desc='Loading RNA-Seq data')):
+        for idx, line_idx in enumerate(tqdm.tqdm(indices, desc='Loading data')):
             df.loc[line_idx] = rows[idx]
 
         df.columns.set_names([index_name], inplace=True)
@@ -179,27 +180,29 @@ class RawLoader(PickleLoader):
 
     def _init_data(self) -> pd.DataFrame:
         url_to_rnaseq = 'https://toil-xena-hub.s3.us-east-1.amazonaws.com/download/TcgaTargetGtex_rsem_gene_tpm.gz'
+        url_to_metadata = 'https://toil-xena-hub.s3.us-east-1.amazonaws.com/download/TcgaTargetGTEX_phenotype.txt.gz'
         dir_to_junctions = os.path.join(self.dir_to_data, 'junctions')
-        path_to_metadata = os.path.join(self.dir_to_data, 'metadata.csv')
         path_to_gene_ids = os.path.join(self.dir_to_data, 'gene_ids.txt')
 
-        self.log(logging.INFO, f'Loading RNA-Seq and Splice junction data...')
+        self.log(logging.INFO, f'Loading RNA-Seq and Junction data...')
+
         # load gene expression
-        path_to_rnaseq_local = os.path.join(self.dir_to_data, os.path.basename(url_to_rnaseq))
-        if not os.path.isfile(path_to_rnaseq_local):
-            response = requests.get(url_to_rnaseq, stream=True)
-            with open(path_to_rnaseq_local, 'wb') as rnaseq_local:
-                for chunk in response.iter_content(chunk_size=1024):
-                    rnaseq_local.write(chunk)
+        rnaseq = self.load_from_xena(url_to_rnaseq, self.dir_to_data)
 
-        path_to_rnaseq_local_df = f'{path_to_rnaseq_local}.pkl'
-        if os.path.exists(path_to_rnaseq_local_df):
-            rnaseq = pd.read_pickle(path_to_rnaseq_local_df)
-        else:
-            rnaseq = CsvGzReader(sep='\t').read(path_to_rnaseq_local)
-            pd.to_pickle(rnaseq, path_to_rnaseq_local_df)
+        # load metadata
+        metadata = self.load_from_xena(url_to_metadata, self.dir_to_data)
+        cond_comb = (
+            (metadata['_study'] == Cohort.GTEX.name) & (metadata['_sample_type'] == 'Normal Tissue')
+        ) | (
+            (metadata['_study'] == Cohort.TCGA.name) & (
+                (metadata['_sample_type'] != 'Solid Tissue Normal') | (metadata['_sample_type'] != 'Control Analyte')
+            )
+        )
+        metadata = metadata[cond_comb]
+        cols = {'_primary_site': 'tissue', '_study': 'cohort'}
+        metadata = metadata[list(cols.keys())].rename(columns=cols)
 
-        # load splice junctions
+        # load junctions
         try:
             path_to_junctions = glob.glob(f'{dir_to_junctions}/{self.gene_symbol}*.csv')
             junctions = pd.read_csv(path_to_junctions[0], sep=',', index_col=0)
@@ -209,9 +212,6 @@ class RawLoader(PickleLoader):
         # load genes to subset
         gene_list = open(path_to_gene_ids, 'r').readlines()
         gene_list = list(map(lambda l: l.strip('\n'), gene_list))
-
-        # load metadata
-        metadata = pd.read_csv(path_to_metadata, index_col=0)
 
         self.log(logging.INFO, f'Processing {self.gene_symbol} {self.condition.name.lower()} data...')
         # process junctions
@@ -255,11 +255,28 @@ class RawLoader(PickleLoader):
         filename = f'{self.gene_symbol}_{setup_id}.pkl'
         path_to_data = os.path.join(self.out_dir, self.gene_symbol, filename)
         self.log(logging.INFO, f'Saving data as `{filename}`...')
+        os.makedirs(os.path.dirname(path_to_data), exist_ok=True)
         pd.to_pickle(data, path_to_data)
         self.path_to_file = path_to_data
 
-
         return data
+
+    @staticmethod
+    def load_from_xena(url_to_data: str, dir_to_data: str) -> pd.DataFrame:
+        path_to_local = os.path.join(dir_to_data, os.path.basename(url_to_data))
+        if not os.path.isfile(path_to_local):
+            response = requests.get(url_to_data, stream=True)
+            with open(path_to_local, 'wb') as df_local:
+                for chunk in response.iter_content(chunk_size=1024):
+                    df_local.write(chunk)
+        path_to_local_df = f'{path_to_local}.pkl'
+        if os.path.exists(path_to_local_df):
+            df = pd.read_pickle(path_to_local_df)
+        else:
+            df = CsvGzReader(sep='\t').read(path_to_local)
+            pd.to_pickle(df, path_to_local_df)
+
+        return df
 
     @staticmethod
     def calculate_psi(reads: pd.DataFrame) -> pd.DataFrame:
@@ -399,7 +416,9 @@ class RawLoader(PickleLoader):
         # subset tissues
         n_samples_per_tissue = data['tissue'].value_counts()
         if sample_size_per_tissue_min is not None and np.any(n_samples_per_tissue < sample_size_per_tissue_min):
-            RawLoader.log(logging.INFO, f'\tSelecting {data["tissue"].nunique()} tissues with at least {sample_size_per_tissue_min} samples...')
+            n_tissues = data['tissue'].nunique()
+            RawLoader.log(logging.INFO,
+                          f'\tSelecting {n_tissues} tissues with at least {sample_size_per_tissue_min} samples...')
             for tissue in n_samples_per_tissue[n_samples_per_tissue < sample_size_per_tissue_min].index:
                 data = data.loc[data['tissue'] != tissue, :]
 
@@ -415,29 +434,25 @@ class RawLoader(PickleLoader):
             pair_tissues: Optional[bool] = False
     ) -> pd.DataFrame:
 
-        # subset samples
-        try:
-            if condition == Condition.Combined:
-                mask_subsets = (data_annotated['condition'] == Condition.Normal.name) | (
-                        data_annotated['condition'] == Condition.Tumor.name)
-            else:
-                cohort_id: str = Cohort.TCGA.name if condition == Condition.Tumor else Cohort.GTEX.name
-                mask_subsets = data_annotated['cohort'].str.contains(cohort_id) & data_annotated['condition'].str.contains(
-                    condition.name)
-        except ValueError:
-            raise logging.warning(
-                f'`{condition.name}` samples are not found. Check out data or/and Try another condition(s).')
-        df_subset = data_annotated[mask_subsets]
+        if condition == Condition.Combined:
+            if pair_tissues:
+                # select matched tissues
+                tissues_common = list(
+                    set(data_annotated.loc[data_annotated['cohort'] == Cohort.TCGA.name, 'tissue']).intersection(
+                        set(data_annotated.loc[data_annotated['cohort'] == Cohort.GTEX.name, 'tissue'])))
+                data_annotated = data_annotated[data_annotated['tissue'].isin(tissues_common)]
+                RawLoader.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
+        else:
+            try:
+                # subset condition
+                cohort_name: str = Cohort.TCGA.name if condition == Condition.Tumor else Cohort.GTEX.name
+                mask_subsets = data_annotated['cohort'].str.contains(cohort_name)
+                data_annotated = data_annotated[mask_subsets]
+            except ValueError:
+                raise logging.warning(
+                    f'`{condition.name}` samples are not found. Check out data or/and Try another condition(s).')
 
-        # select matched tissues
-        if (condition == Condition.Combined) & (data_annotated['condition'].nunique() == 2) & pair_tissues:
-            tissues_common = list(
-                set(df_subset.loc[df_subset['condition'] == Condition.Tumor.name, 'tissue']).intersection(
-                    set(df_subset.loc[df_subset['condition'] == Condition.Normal.name, 'tissue'])))
-            df_subset = df_subset[df_subset['tissue'].isin(tissues_common)]
-            RawLoader.log(logging.INFO, f"\tSelecting {df_subset['tissue'].nunique()} common tissues...")
-
-        return df_subset
+        return data_annotated
 
     @staticmethod
     def get_setup_id(
