@@ -134,7 +134,7 @@ class Prediction(RegulASTable):
 
     __tablename__ = 'Prediction'
 
-    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
+    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'), index=True)
     sample_name = Column('sample_name', String(128))
     true_value = Column('true_value', LargeBinary)
     predicted_value = Column('predicted_value', LargeBinary)
@@ -147,7 +147,7 @@ class FeatureRanking(RegulASTable):
 
     __tablename__ = 'FeatureRanking'
 
-    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'))
+    pipeline_idx = Column('pipeline_id', ForeignKey('Pipeline.ID'), index=True)
     feature = Column('feature', String(128))
     score = Column('score', Float)
 

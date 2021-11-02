@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from enum import auto, Enum
-from typing import List, Tuple, Union, Optional
+from typing import List, Tuple, Optional
 
 from regulAS.utils import Loader
 
