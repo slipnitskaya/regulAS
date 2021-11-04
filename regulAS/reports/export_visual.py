@@ -7,7 +7,7 @@ import scipy.stats
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import hydra
+import hydra  # noqa
 
 import regulAS.persistence as persistence
 
@@ -103,7 +103,14 @@ class ModelPerformanceBarGraphReport(Report):
 
         fig, ax = cast(Tuple[Figure, Axes], plt.subplots(1, 1, figsize=self.figsize, dpi=self.dpi))
 
-        top_models[pretty_targets].plot(ax=ax, kind='bar', yerr=top_models[bar_errors].values, rot=45)
+        top_models[pretty_targets].plot(
+            ax=ax,
+            kind='bar',
+            yerr=top_models[bar_errors].rename(
+                columns=dict(zip(bar_errors, pretty_targets))
+            ),
+            rot=45
+        )
         ax.set_title(self.title, fontsize=self.fonttitle)
         ax.set_xlabel(self.x_label, fontsize=self.fontsize)
         ax.set_ylabel(self.y_label, fontsize=self.fontsize)

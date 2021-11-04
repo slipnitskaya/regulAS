@@ -2,7 +2,7 @@ import os
 
 import pandas as pd
 
-import hydra
+import hydra  # noqa
 
 from regulAS.reports import Report
 
@@ -39,7 +39,7 @@ class ExportCSV(Report):
         os.makedirs(os.path.dirname(path_to_output), exist_ok=True)
 
         df.to_csv(
-            path_to_output,
+            path_to_output,  # noqa
             sep=self.sep,
             decimal=self.decimal
         )
