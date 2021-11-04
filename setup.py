@@ -18,6 +18,7 @@ setup(
     install_requires=[
         'networkx>=2.5',
         'numpy>=1.19.2',
+        'scipy>=1.7.1',
         'scikit-learn>=0.24.2',
         'pandas>=1.2.2',
         'matplotlib>=3.1.3',
