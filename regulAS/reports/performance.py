@@ -1,9 +1,11 @@
 import itertools
+import multiprocessing as mp
 
+import tqdm
 import numpy as np
 import pandas as pd
 
-import hydra
+import hydra  # noqa
 
 import regulAS.persistence as persistence
 
@@ -11,7 +13,7 @@ from collections import defaultdict
 
 from sqlalchemy import and_
 
-from typing import Dict, List, Callable, Iterable, Optional
+from typing import Dict, List, Tuple, Callable, Iterable, Optional
 
 from regulAS.core import RegulAS
 from regulAS.reports import Report
@@ -80,105 +82,107 @@ class ModelPerformanceReport(Report):
 
         model_aliases = dict()
         pipeline: persistence.Pipeline
-        for pipeline in pipelines:
-            data_name = pipeline.experiment.data.name
-            data_md5 = pipeline.experiment.data.md5
+        with mp.Pool(mp.cpu_count()) as pool:
+            for pipeline in tqdm.tqdm(pipelines, total=pipelines.count()):
+                data_name = pipeline.experiment.data.name
+                data_md5 = pipeline.experiment.data.md5
 
-            model = conn.query(
-                persistence.Transformation
-            ).join(
-                persistence.Transformation.pipelines,
-                persistence.Pipeline
-            ).filter(
-                and_(
-                    persistence.Pipeline.idx == pipeline.idx,
-                    persistence.Transformation.type_ == persistence.Transformation.Type.MODEL
+                model = conn.query(
+                    persistence.Transformation
+                ).join(
+                    persistence.Transformation.pipelines,
+                    persistence.Pipeline
+                ).filter(
+                    and_(
+                        persistence.Pipeline.idx == pipeline.idx,
+                        persistence.Transformation.type_ == persistence.Transformation.Type.MODEL
+                    )
+                ).first()
+
+                hyper_parameters = conn.query(
+                    persistence.HyperParameter.name,
+                    persistence.HyperParameterValue.value
+                ).join(
+                    persistence.HyperParameterValue,
+                    persistence.TransformationSequence,
+                    persistence.Transformation,
+                    persistence.Pipeline
+                ).filter(
+                    and_(
+                        persistence.Transformation.idx == model.idx,
+                        persistence.Pipeline.idx == pipeline.idx
+                    )
                 )
-            ).first()
 
-            hyper_parameters = conn.query(
-                persistence.HyperParameter.name,
-                persistence.HyperParameterValue.value
-            ).join(
-                persistence.HyperParameterValue,
-                persistence.TransformationSequence,
-                persistence.Transformation,
-                persistence.Pipeline
-            ).filter(
-                and_(
-                    persistence.Transformation.idx == model.idx,
-                    persistence.Pipeline.idx == pipeline.idx
+                alias, hyper_parameters_md5 = conn.query(
+                    persistence.TransformationSequence.alias,
+                    persistence.TransformationSequence.md5
+                ).join(
+                    persistence.Transformation,
+                    persistence.Pipeline
+                ).filter(
+                    and_(
+                        persistence.Transformation.idx == model.idx,
+                        persistence.Pipeline.idx == pipeline.idx
+                    )
+                ).first()
+
+                model_hyper_parameters = list()
+                for name, value in hyper_parameters:
+                    model_hyper_parameters.append((name, value))
+
+                model_hyper_parameters = ', '.join([
+                    f'{name}: {value}' for name, value in sorted(model_hyper_parameters, key=lambda x: x[0])
+                ])
+                model_hyper_parameters = f'{{{model_hyper_parameters}}}'
+
+                model_name = model.fqn
+
+                model_aliases[(model_name, hyper_parameters_md5)] = alias
+
+                predictions = conn.query(
+                    persistence.Prediction
+                ).filter(
+                    persistence.Prediction.pipeline == pipeline
                 )
-            )
 
-            alias, hyper_parameters_md5 = conn.query(
-                persistence.TransformationSequence.alias,
-                persistence.TransformationSequence.md5
-            ).join(
-                persistence.Transformation,
-                persistence.Pipeline
-            ).filter(
-                and_(
-                    persistence.Transformation.idx == model.idx,
-                    persistence.Pipeline.idx == pipeline.idx
+                for training, y_true, y_pred in pool.imap(self._loader, predictions, chunksize=250):
+                    if training:
+                        y_true_train[pipeline.fold].append(y_true)
+                        y_pred_train[pipeline.fold].append(y_pred)
+                    else:
+                        y_true_test[pipeline.fold].append(y_true)
+                        y_pred_test[pipeline.fold].append(y_pred)
+
+                metric_test = self.metric(
+                    np.array(y_true_test[pipeline.fold]).squeeze(),
+                    np.array(y_pred_test[pipeline.fold]).squeeze()
                 )
-            ).first()
+                try:
+                    metric_test = next(iter(metric_test))
+                except TypeError:
+                    pass
 
-            model_hyper_parameters = list()
-            for name, value in hyper_parameters:
-                model_hyper_parameters.append((name, value))
+                metric_train = self.metric(
+                    np.array(y_true_train[pipeline.fold]).squeeze(),
+                    np.array(y_pred_train[pipeline.fold]).squeeze()
+                )
+                try:
+                    metric_train = next(iter(metric_train))
+                except TypeError:
+                    pass
 
-            model_hyper_parameters = ', '.join([
-                f'{name}: {value}' for name, value in sorted(model_hyper_parameters, key=lambda x: x[0])
-            ])
-            model_hyper_parameters = f'{{{model_hyper_parameters}}}'
+                column_test = metric_name.format('test', pipeline.fold)
+                column_train = metric_name.format('train', pipeline.fold)
 
-            model_name = model.fqn
+                result[data_name][data_md5][model_name][hyper_parameters_md5][
+                    'hyper_parameters'
+                ] = model_hyper_parameters
+                result[data_name][data_md5][model_name][hyper_parameters_md5][column_test] = metric_test
+                result[data_name][data_md5][model_name][hyper_parameters_md5][column_train] = metric_train
 
-            model_aliases[(model_name, hyper_parameters_md5)] = alias
-
-            predictions = conn.query(
-                persistence.Prediction
-            ).filter(
-                persistence.Prediction.pipeline == pipeline
-            )
-
-            prediction: persistence.Prediction
-            for prediction in predictions:
-                if prediction.training:
-                    y_true_train[pipeline.fold].append(load_ndarray(prediction.true_value).astype(np.float16))
-                    y_pred_train[pipeline.fold].append(load_ndarray(prediction.predicted_value).astype(np.float16))
-                else:
-                    y_true_test[pipeline.fold].append(load_ndarray(prediction.true_value).astype(np.float16))
-                    y_pred_test[pipeline.fold].append(load_ndarray(prediction.predicted_value).astype(np.float16))
-
-            metric_test = self.metric(
-                np.array(y_true_test[pipeline.fold]).squeeze(),
-                np.array(y_pred_test[pipeline.fold]).squeeze()
-            )
-            try:
-                metric_test = next(iter(metric_test))
-            except TypeError:
-                pass
-
-            metric_train = self.metric(
-                np.array(y_true_train[pipeline.fold]).squeeze(),
-                np.array(y_pred_train[pipeline.fold]).squeeze()
-            )
-            try:
-                metric_train = next(iter(metric_train))
-            except TypeError:
-                pass
-
-            column_test = metric_name.format('test', pipeline.fold)
-            column_train = metric_name.format('train', pipeline.fold)
-
-            result[data_name][data_md5][model_name][hyper_parameters_md5]['hyper_parameters'] = model_hyper_parameters
-            result[data_name][data_md5][model_name][hyper_parameters_md5][column_test] = metric_test
-            result[data_name][data_md5][model_name][hyper_parameters_md5][column_train] = metric_train
-
-            columns_test.add(column_test)
-            columns_train.add(column_train)
+                columns_test.add(column_test)
+                columns_train.add(column_train)
 
         result = pd.DataFrame.from_dict(
             {
@@ -219,3 +223,10 @@ class ModelPerformanceReport(Report):
             dataframes.append({'df': df})
 
         return dataframes
+
+    @staticmethod
+    def _loader(prediction: persistence.Prediction) -> Tuple[bool, np.ndarray, np.ndarray]:
+        y_true = load_ndarray(prediction.true_value).astype(np.float16)
+        y_pred = load_ndarray(prediction.predicted_value).astype(np.float16)
+
+        return prediction.training, y_true, y_pred

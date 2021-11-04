@@ -96,6 +96,7 @@ class RegulAS(metaclass=Singleton):
             database=os.path.join(hydra.utils.to_absolute_path(hydra.utils.get_original_cwd()), db_url.database),
             query=db_url.query
         )
+        db_url = db_url.update_query_dict({'check_same_thread': 'false'}, append=True)
         self._session = Session(bind=create_engine(db_url))
 
         persistence.create_schema(db_url, self._session.bind)
@@ -259,7 +260,7 @@ class RegulAS(metaclass=Singleton):
                         generated[report_name].extend(output)
 
                 self.log(logging.INFO, f'"{report_name}" was generated successfully.')
-            except:
+            except:  # noqa
                 self.log(logging.ERROR, f'"{report_name}" failed. Details:\n' + traceback.format_exc())
 
     def _init_data(
@@ -319,18 +320,18 @@ class RegulAS(metaclass=Singleton):
         try:
             train_ids, test_ids = TRAIN_IDS[fold], TEST_IDS[fold]
 
-            X_train = SAMPLES.iloc[train_ids]
+            X_train = SAMPLES.iloc[train_ids]  # noqa
             y_train = TARGETS.iloc[train_ids]
 
-            X_test = SAMPLES.iloc[test_ids]
+            X_test = SAMPLES.iloc[test_ids]  # noqa
 
             for name in task.transformations.keys():
                 transform = hydra.utils.instantiate(task.transformations[name])
 
                 transform.fit(X_train)
 
-                X_train = transform.transform(X_train)
-                X_test = transform.transform(X_test)
+                X_train = transform.transform(X_train)  # noqa
+                X_test = transform.transform(X_test)  # noqa
 
             model_name = next(iter(task.model.keys()))
             model = hydra.utils.instantiate(task.model[model_name])
@@ -339,7 +340,7 @@ class RegulAS(metaclass=Singleton):
 
             out = model.predict(X_train), model.predict(X_test), RegulAS._get_feature_scores(model)
             success = True
-        except:
+        except:  # noqa
             out = traceback.format_exc()
         finally:
             return idx, fold, success, out
@@ -405,7 +406,7 @@ class RegulAS(metaclass=Singleton):
             else:
                 tb = out
                 self.log(logging.ERROR, f'{task_desc} failed. Details:\n' + tb)
-        except:
+        except:  # noqa
             self.log(logging.ERROR, f'Could not process result. Details:\n{traceback.format_exc()}')
         finally:
             if pipeline is not None:
