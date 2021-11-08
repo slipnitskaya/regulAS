@@ -2,10 +2,12 @@ import os
 import copy
 import logging
 
-import hydra
+import hydra  # noqa
 
 from itertools import product
 from collections import defaultdict
+
+from sklearnex import patch_sklearn
 
 from omegaconf import OmegaConf, DictConfig, ListConfig
 
@@ -15,6 +17,9 @@ from .core import RegulAS
 
 
 TraversalAction = Callable[..., DictConfig]
+
+
+patch_sklearn()
 
 
 def traverse_config(root: Union[DictConfig, ListConfig],
