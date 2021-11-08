@@ -31,13 +31,14 @@ class ModelPerformanceBarGraphReport(Report):
         output_dir: str,
         bar_targets: Dict[str, str],
         bar_errors: Optional[Dict[str, str]] = None,
-        fig_width: Optional[float] = None,
-        fig_height: Optional[float] = None,
+        greater_is_better: bool = False,
+        fig_width: float = 8.0,
+        fig_height: float = 8.0,
         dpi: Optional[float] = None,
-        title: Optional[str] = None,
-        x_label: Optional[str] = None,
-        y_label: Optional[str] = None,
-        y_lim_bottom: Optional[float] = None,
+        title: str = 'PSI prediction error of tested models',
+        x_label: str = 'models',
+        y_label: str = 'objective',
+        y_lim_bottom: float = 0.0,
         y_lim_top: Optional[float] = None
     ):
         super(ModelPerformanceBarGraphReport, self).__init__()
@@ -45,6 +46,7 @@ class ModelPerformanceBarGraphReport(Report):
         self.output_dir = output_dir
         self.bar_targets = bar_targets
         self.bar_errors = bar_errors
+        self.greater_is_better = greater_is_better
         self.fig_width = fig_width
         self.fig_height = fig_height
         self.dpi = dpi
@@ -95,7 +97,12 @@ class ModelPerformanceBarGraphReport(Report):
 
         top_models = pd.concat([
             model_df.iloc[[0]].drop(columns='hyper_parameters') for _, model_df in perf_groups
-        ]).rename(columns=dict(zip(bar_targets, pretty_targets)))
+        ]).sort_values(
+            by=bar_targets[:1],
+            ascending=not self.greater_is_better
+        ).rename(
+            columns=dict(zip(bar_targets, pretty_targets))
+        )
 
         top_models = top_models.set_index(
             top_models.index.to_flat_index()
@@ -141,13 +148,13 @@ class ModelPredictionsScatterPlotReport(Report):
     def __init__(
         self,
         output_dir: str,
-        correlation_method: str = 'pearsonr',
-        fig_width: Optional[float] = None,
-        fig_height: Optional[float] = None,
+        correlation_method: str = 'spearmanr',
+        fig_width: float = 8.0,
+        fig_height: float = 8.0,
         dpi: Optional[float] = None,
-        title: Optional[str] = None,
-        x_label: Optional[str] = None,
-        y_label: Optional[str] = None
+        title: str = 'Modelling of PSI',
+        x_label: str = 'PSI observed',
+        y_label: str = 'PSI modelled'
     ):
         super(ModelPredictionsScatterPlotReport, self).__init__()
 
@@ -248,20 +255,24 @@ class ModelPredictionsScatterPlotReport(Report):
 
             fig = plt.figure(figsize=self.figsize)
 
-            plt.scatter(y_true, y_pred, s=10)
-            plt.title(f'Modelling of PSI\n({model_alias})', fontsize=self.fonttitle, y=1.01)
+            plt.scatter(
+                x=y_true,
+                y=np.clip(y_pred, a_min=0.0, a_max=1.0),
+                s=10
+            )
+            plt.title(f'{self.title}\n({model_alias})', fontsize=self.fonttitle, y=1.01)
             plt.annotate(
                 f'{self._print_correlation(y_true, y_pred, method=self.correlation_method)}',
                 size=self.fontsize,
                 xy=(0.2, 0.02)
             )
 
-            plt.xlabel('PSI observed', fontsize=self.fontsize)
-            plt.ylabel('PSI predicted', fontsize=self.fontsize)
+            plt.xlabel(self.x_label, fontsize=self.fontsize)
+            plt.ylabel(self.y_label, fontsize=self.fontsize)
 
             plt.plot(
-                [0.0, np.max([y_true, y_pred])],
-                [0.0, np.max([y_true, y_pred])],
+                [0.0, 1.0],
+                [0.0, 1.0],
                 c='gray',
                 alpha=0.7,
                 ls='--',
@@ -275,7 +286,7 @@ class ModelPredictionsScatterPlotReport(Report):
             plt.plot(*fitted, c='r', linewidth=1.0, label='Linear fitting')
             plt.legend(loc='upper left')
             plt.xlim(left=0.0, right=1.0)
-            plt.ylim(bottom=0.0, top=bnd_high)
+            plt.ylim(bottom=0.0, top=1.0)
 
             df_title = '-'.join([
                 df.attrs.get('title', ''),
@@ -308,13 +319,13 @@ class FeatureRankingBarGraphReport(Report):
     def __init__(
         self,
         output_dir: str,
-        top_k: Optional[int] = None,
-        fig_width: Optional[float] = None,
-        fig_height: Optional[float] = None,
+        top_k: int = 10,
+        fig_width: float = 8.0,
+        fig_height: float = 8.0,
         dpi: Optional[float] = None,
-        title: Optional[str] = None,
-        x_label: Optional[str] = None,
-        y_label: Optional[str] = None
+        title: str = 'Most{top_k} relevant regulators\n({model_alias})',
+        x_label: str = 'relevance score',
+        y_label: str = 'regulators'
     ):
         super(FeatureRankingBarGraphReport, self).__init__()
 
@@ -390,7 +401,17 @@ class FeatureRankingBarGraphReport(Report):
                 color=colors
             )
 
-            plt.title(self.title.format(model_alias=model_alias), fontsize=self.fonttitle, y=1.01)
+            title_format_kwargs = dict()
+            if '{model_alias}' in self.title:
+                title_format_kwargs['model_alias'] = model_alias
+            if '{top_k}' in self.title and self.top_k is not None:
+                title_format_kwargs['top_k'] = f'-{self.top_k}'
+
+            plt.title(
+                self.title.format(**title_format_kwargs),
+                fontsize=self.fonttitle,
+                y=1.01
+            )
             ax.set_xlabel(self.x_label, fontsize=self.fontsize)
             ax.set_ylabel(self.y_label, fontsize=self.fontsize)
             if self.labelsize is not None:
