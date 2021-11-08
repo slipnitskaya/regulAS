@@ -36,7 +36,7 @@ class ModelPerformanceReport(Report):
         self.experiment_name = experiment_name
 
         if score_fn is not None and loss_fn is not None:
-            raise ValueError('Ambiguous metric function. Please choose either `score_fn` of `loss_fn`.')
+            raise ValueError('Ambiguous metric function. Please choose either `score_fn` or `loss_fn`.')
 
         if score_fn is not None:
             self.metric = hydra.utils.get_method(score_fn)
