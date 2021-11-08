@@ -9,6 +9,7 @@ import networkx as nx
 import multiprocessing as mp
 
 import hydra  # noqa
+
 import numpy as np
 import pandas as pd
 
@@ -17,6 +18,7 @@ from collections import defaultdict
 from typing import cast, Any, Dict, List, Type, Tuple, Union, Optional, Collection
 
 from omegaconf import DictConfig, OmegaConf
+from hydra.core.hydra_config import HydraConfig  # noqa
 
 from sqlalchemy import and_, create_engine
 
@@ -376,7 +378,7 @@ class RegulAS(metaclass=Singleton):
 
             if success:
                 y_pred_train, y_pred_test, feature_scores = cast(Tuple[np.ndarray, np.ndarray, np.ndarray], out)
-                self.log(logging.INFO, f'{task_desc} finished successfully.')
+                self.log(logging.INFO, f'[Run #{HydraConfig.get().job.num}] {task_desc} finished successfully.')
 
                 for idx_pred, idx_true in enumerate(self._train_ids[fold]):
                     persistence.Prediction(
