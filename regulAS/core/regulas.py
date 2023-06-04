@@ -378,7 +378,8 @@ class RegulAS(metaclass=Singleton):
 
             if success:
                 y_pred_train, y_pred_test, feature_scores = cast(Tuple[np.ndarray, np.ndarray, np.ndarray], out)
-                self.log(logging.INFO, f'[Run #{HydraConfig.get().job.num}] {task_desc} finished successfully.')
+                run_idx = 0 if OmegaConf.is_missing(HydraConfig.get().job, 'num') else HydraConfig.get().job.num
+                self.log(logging.INFO, f'[Run #{run_idx}] {task_desc} finished successfully.')
 
                 for idx_pred, idx_true in enumerate(self._train_ids[fold]):
                     persistence.Prediction(
