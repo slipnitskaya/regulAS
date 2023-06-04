@@ -159,12 +159,15 @@ class RegulAS(metaclass=Singleton):
         tasks: Collection[DictConfig]
     ) -> None:
 
+        num_tasks = len(tasks)
+        num_tasks_total = num_tasks * self._splitter.n_splits
+        num_processes = min(self._num_processes, num_tasks_total)
         self.log(
             logging.INFO,
-            f'{len(tasks)} tasks were prepared for '
+            f'{num_tasks} tasks were prepared for '
             f'{self._splitter.n_splits}-fold cross-validation '
-            f'using {self._num_processes} workers '
-            f'({len(tasks) * self._splitter.n_splits} tasks overall)'
+            f'using {num_processes} workers '
+            f'({num_tasks_total} tasks overall)'
         )
 
         task_idx = 1
@@ -174,7 +177,7 @@ class RegulAS(metaclass=Singleton):
                 task_idx += 1
 
         with mp.Pool(
-            processes=self._num_processes,
+            processes=num_processes,
             initializer=self._init_pool,
             initargs=(self._samples, self._targets, self._train_ids, self._test_ids)
         ) as pool:
