@@ -6,7 +6,18 @@ from sqlalchemy.sql.functions import now
 from sqlalchemy.orm.relationships import RelationshipProperty
 from sqlalchemy.orm import Session, relationship, declarative_base
 
-from sqlalchemy import Enum, Float, Column, String, Boolean, Integer, DateTime, ForeignKey, LargeBinary
+from sqlalchemy import (
+    Enum,
+    Float,
+    Column,
+    String,
+    Boolean,
+    Integer,
+    DateTime,
+    ForeignKey,
+    LargeBinary,
+    UniqueConstraint
+)
 
 
 class BaseTable(object):
@@ -85,8 +96,9 @@ class Transformation(RegulASTable):
         TRANSFORM = enum.auto()
 
     __tablename__ = 'Transformation'
+    __tableargs__ = (UniqueConstraint('fqn', 'version'),)
 
-    fqn = Column('fqn', String(512), unique=True)
+    fqn = Column('fqn', String(512))
     version = Column('version', String(128))
     source = Column('source', String(65536))
     type_ = Column('type', Enum(Type))
