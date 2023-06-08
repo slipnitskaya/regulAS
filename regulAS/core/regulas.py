@@ -1,6 +1,7 @@
 import os
 import sys
 import enum
+import random
 import hashlib
 import inspect
 import logging
@@ -85,6 +86,8 @@ class RegulAS(metaclass=Singleton):
         cfg: DictConfig
     ) -> InitStatus:
 
+        self.seed_everything(cfg.random_state)
+
         self._tasks = dict()
         self._num_processes = max(cfg.num_processes, 0) or mp.cpu_count()
 
@@ -149,6 +152,12 @@ class RegulAS(metaclass=Singleton):
             init_status |= self.InitStatus.ALLOW_REPORTS
 
         return init_status
+
+    @staticmethod
+    def seed_everything(seed: Optional[int]) -> None:
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        random.seed(seed)
+        np.random.seed(seed)
 
     @staticmethod
     def log(level, msg, *args, **kwargs):
