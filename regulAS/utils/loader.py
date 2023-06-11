@@ -374,6 +374,9 @@ class RawLoader(PickleLoader):
             RawLoader.log(logging.INFO, '\tLog-transforming expression values...')
             rnaseq = rnaseq.apply(lambda x: np.log2(x + 1e-3))
 
+            if rnaseq.isnull().sum().sum() > 0:
+                RawLoader.log(logging.WARNING, 'Log-transformed data contain NaN values')
+
         # subset genes
         genes_found = list(set(gene_ids) & set(rnaseq.columns))
         if not genes_found:
