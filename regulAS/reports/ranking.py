@@ -33,7 +33,7 @@ class FeatureRankingReport(Report):
         sort_ascending: bool = True,
         top_k_models: Optional[int] = None,
         top_k_features: Optional[int] = None,
-        symbolic_aliases: bool = False
+        symbolic_aliases: bool = True
     ):
         super(FeatureRankingReport, self).__init__()
 
