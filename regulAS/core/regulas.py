@@ -290,6 +290,9 @@ class RegulAS(metaclass=Singleton):
         if self._dataset is not None:
             self._samples, self._targets, *self._other = self._dataset.load()
 
+            if self._samples.isnull().sum().sum() > 0:
+                self.log(logging.WARNING, 'Data contain NaN values')
+
             data_md5 = self._dataset.md5
             data = self.db_connection.query(persistence.Data).filter(persistence.Data.md5 == data_md5).first()
             if data is None:
