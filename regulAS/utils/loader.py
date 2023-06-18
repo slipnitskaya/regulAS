@@ -185,7 +185,6 @@ class RawLoader(PickleLoader):
         path_to_gene_ids = os.path.join(self.dir_to_data, 'gene_ids.txt')
 
         self.log(logging.INFO, f'Loading RNA-Seq and Junction data...')
-
         # load gene expression
         rnaseq = self.load_from_xena(url_to_rnaseq, self.dir_to_data)
 
@@ -199,6 +198,8 @@ class RawLoader(PickleLoader):
             (metadata['_study'] == Cohort.TCGA.name) & (metadata['_sample_type'] == 'Primary Tumor')
         )
         metadata = metadata[cond_comb]
+
+        # rename columns
         cols = {'_primary_site': 'tissue', '_study': 'cohort'}
         metadata = metadata[list(cols.keys())].rename(columns=cols)
 
@@ -207,7 +208,7 @@ class RawLoader(PickleLoader):
             path_to_junctions = glob.glob(f'{dir_to_junctions}/{self.gene_symbol}*.csv')
             junctions = pd.read_csv(path_to_junctions[0], sep=',', index_col=0)
         except (FileNotFoundError, ValueError, IndexError) as ex:
-            raise ex.__class__(f'Junction data is not found for {self.gene_symbol}.') from ex
+            raise ex.__class__(f'Junction data are not found for {self.gene_symbol}.') from ex
 
         # load genes to subset
         gene_list = open(path_to_gene_ids, 'r').readlines()
@@ -220,7 +221,7 @@ class RawLoader(PickleLoader):
             cutoff_reads=self.cutoff_reads
         )
 
-        # transpose to samples vs. features
+        # transpose data (samples x features)
         rnaseq = rnaseq.T
         psi = psi.T
 
@@ -254,8 +255,9 @@ class RawLoader(PickleLoader):
         )
         filename = f'{self.gene_symbol}_{setup_id}.pkl'
         path_to_data = os.path.join(self.out_dir, self.gene_symbol, filename)
-        self.log(logging.INFO, f'Saving data as `{filename}`...')
         os.makedirs(os.path.dirname(path_to_data), exist_ok=True)
+
+        self.log(logging.INFO, f'Saving data as `{filename}`...')
         pd.to_pickle(data, path_to_data)
         self.path_to_file = path_to_data
 
@@ -297,7 +299,7 @@ class RawLoader(PickleLoader):
             cutoff_reads: float
     ) -> pd.DataFrame:
 
-        # remove samples w.r.t. coverage of reads
+        # subset samples w.r.t. coverage of reads
         if cutoff_reads == 0:
             # remove samples with no reads (zeros in all junctions)
             samples_coverage_low = reads.columns[(reads == cutoff_reads).all().values].values.tolist()
@@ -369,14 +371,6 @@ class RawLoader(PickleLoader):
             if ratio_nan_to_drop != 1.0:
                 rnaseq = rnaseq.fillna(0)
 
-        # log-transform values
-        if log_transform:
-            RawLoader.log(logging.INFO, '\tLog-transforming expression values...')
-            rnaseq = rnaseq.apply(lambda x: np.log2(x + 1e-3))
-
-            if rnaseq.isnull().sum().sum() > 0:
-                RawLoader.log(logging.WARNING, 'Log-transformed data contain NaN values')
-
         # subset genes
         genes_found = list(set(gene_ids) & set(rnaseq.columns))
         if not genes_found:
@@ -394,6 +388,14 @@ class RawLoader(PickleLoader):
         else:
             sys.exit('Program is terminated as no gene IDs to subset are found in the RNA-Seq data.'
                      'Pass a list of another genes IDs as `gene_ids` and/or check whether Ensembl IDs are correct.')
+
+        # log-transform values
+        if log_transform:
+            RawLoader.log(logging.INFO, '\tLog-transforming expression values...')
+            rnaseq = rnaseq.apply(lambda x: np.log2(x + 1e-3))
+
+            if rnaseq.isnull().sum().sum() > 0:
+                RawLoader.log(logging.WARNING, 'Log-transformed data contain NaN values')
 
         return rnaseq
 
@@ -417,14 +419,14 @@ class RawLoader(PickleLoader):
         data = RawLoader.subset_condition(data, condition=condition, pair_tissues=pair_tissues)
 
         # subset tissues
-        n_samples_per_tissue = data['tissue'].value_counts()
-        if sample_size_per_tissue_min is not None and np.any(n_samples_per_tissue < sample_size_per_tissue_min):
+        samples_per_tissue = data['tissue'].value_counts()
+        cond_tissues_with_small_sample_size = samples_per_tissue < sample_size_per_tissue_min
+        if sample_size_per_tissue_min is not None and np.any(cond_tissues_with_small_sample_size):
+            tissues_to_be_filtered_out = samples_per_tissue[cond_tissues_with_small_sample_size].index.to_list()
+            data = data.loc[~data['tissue'].isin(tissues_to_be_filtered_out), :]
             n_tissues = data['tissue'].nunique()
             RawLoader.log(logging.INFO,
                           f'\tSelecting {n_tissues} tissues with at least {sample_size_per_tissue_min} samples...')
-            for tissue in n_samples_per_tissue[n_samples_per_tissue < sample_size_per_tissue_min].index:
-                data = data.loc[data['tissue'] != tissue, :]
-
         # remove annotation
         data = data.select_dtypes(include=[np.number])
 
