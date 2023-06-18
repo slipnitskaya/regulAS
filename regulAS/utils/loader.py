@@ -191,12 +191,12 @@ class RawLoader(PickleLoader):
 
         # load metadata
         metadata = self.load_from_xena(url_to_metadata, self.dir_to_data)
+
+        # subset tumor and normal samples
         cond_comb = (
             (metadata['_study'] == Cohort.GTEX.name) & (metadata['_sample_type'] == 'Normal Tissue')
         ) | (
-            (metadata['_study'] == Cohort.TCGA.name) & (
-                (metadata['_sample_type'] != 'Solid Tissue Normal') | (metadata['_sample_type'] != 'Control Analyte')
-            )
+            (metadata['_study'] == Cohort.TCGA.name) & (metadata['_sample_type'] == 'Primary Tumor')
         )
         metadata = metadata[cond_comb]
         cols = {'_primary_site': 'tissue', '_study': 'cohort'}
@@ -437,17 +437,17 @@ class RawLoader(PickleLoader):
             pair_tissues: Optional[bool] = False
     ) -> pd.DataFrame:
 
-        if condition == Condition.Combined:
-            if pair_tissues:
-                # select matched tissues
-                tissues_common = list(
-                    set(data_annotated.loc[data_annotated['cohort'] == Cohort.TCGA.name, 'tissue']).intersection(
-                        set(data_annotated.loc[data_annotated['cohort'] == Cohort.GTEX.name, 'tissue'])))
-                data_annotated = data_annotated[data_annotated['tissue'].isin(tissues_common)]
-                RawLoader.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
-        else:
+        # pair tissues in TCGA and GTEx data
+        if pair_tissues:
+            tissues_common = list(
+                set(data_annotated.loc[data_annotated['cohort'] == Cohort.TCGA.name, 'tissue']).intersection(
+                    set(data_annotated.loc[data_annotated['cohort'] == Cohort.GTEX.name, 'tissue'])))
+            data_annotated = data_annotated[data_annotated['tissue'].isin(tissues_common)]
+            RawLoader.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
+
+        # subset conditions (tumor, normal, or combined samples)
+        if condition != Condition.Combined:
             try:
-                # subset condition
                 cohort_name: str = Cohort.TCGA.name if condition == Condition.Tumor else Cohort.GTEX.name
                 mask_subsets = data_annotated['cohort'].str.contains(cohort_name)
                 data_annotated = data_annotated[mask_subsets]
@@ -470,8 +470,8 @@ class RawLoader(PickleLoader):
         cond_sample_size_per_tissue_min: bool = sample_size_per_tissue_min is not None and sample_size_per_tissue_min > 0
         setup_id += f's{sample_size_per_tissue_min}' if cond_sample_size_per_tissue_min else ''
         setup_id += 'Log' if log_transform else ''
+        setup_id += 'tP' if pair_tissues else ''
         setup_id += f'c{condition.name}'
-        setup_id += 'tP' if (condition == Condition.Combined) and pair_tissues else ''
 
         return setup_id
 
