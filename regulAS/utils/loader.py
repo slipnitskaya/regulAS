@@ -158,6 +158,7 @@ class RawLoader(PickleLoader):
                  log_transform: bool = False,
                  sample_size_per_tissue_min: int = 50,
                  pair_tissues: bool = True,
+                 include_adjacent_tissues: bool = False,
                  objective: Optional[str] = None,
                  meta: Optional[str] = None):
 
@@ -170,6 +171,7 @@ class RawLoader(PickleLoader):
         self.log_transform = log_transform
         self.sample_size_per_tissue_min = sample_size_per_tissue_min
         self.pair_tissues = pair_tissues
+        self.include_adjacent_tissues = include_adjacent_tissues
 
         super(RawLoader, self).__init__(
             name=name,
@@ -192,10 +194,16 @@ class RawLoader(PickleLoader):
         metadata = self.load_from_xena(url_to_metadata, self.dir_to_data)
 
         # subset tumor and normal samples
+        tcga_samples_to_subset: List[str] = ['Primary Tumor']
+
+        if self.include_adjacent_tissues:
+            # include adjacent normal tissues
+            tcga_samples_to_subset += ['Solid Tissue Normal']
+
         cond_comb = (
-            (metadata['_study'] == Cohort.GTEX.name) & (metadata['_sample_type'] == 'Normal Tissue')
+            (metadata['_study'] == Cohort.GTEX.name) & (metadata['_sample_type'].isin(['Normal Tissue']))
         ) | (
-            (metadata['_study'] == Cohort.TCGA.name) & (metadata['_sample_type'] == 'Primary Tumor')
+            (metadata['_study'] == Cohort.TCGA.name) & (metadata['_sample_type'].isin(tcga_samples_to_subset))
         )
         metadata = metadata[cond_comb]
 
@@ -250,8 +258,9 @@ class RawLoader(PickleLoader):
             condition=self.condition,
             cutoff_reads=self.cutoff_reads,
             log_transform=self.log_transform,
+            pair_tissues=self.pair_tissues,
+            include_adjacent_tissues=self.include_adjacent_tissues,
             sample_size_per_tissue_min=self.sample_size_per_tissue_min,
-            pair_tissues=self.pair_tissues
         )
         filename = f'{self.gene_symbol}_{setup_id}.pkl'
         path_to_data = os.path.join(self.out_dir, self.gene_symbol, filename)
@@ -415,28 +424,22 @@ class RawLoader(PickleLoader):
         # annotate data
         data = data.join(metadata, how='inner')
 
-        # subset conditions
-        data = RawLoader.subset_condition(data, condition=condition, pair_tissues=pair_tissues)
+        # subset conditions and tissues
+        data = RawLoader.subset_conditions(
+            data, condition=condition, pair_tissues=pair_tissues, sample_size_per_tissue_min=sample_size_per_tissue_min
+        )
 
-        # subset tissues
-        samples_per_tissue = data['tissue'].value_counts()
-        cond_tissues_with_small_sample_size = samples_per_tissue < sample_size_per_tissue_min
-        if sample_size_per_tissue_min is not None and np.any(cond_tissues_with_small_sample_size):
-            tissues_to_be_filtered_out = samples_per_tissue[cond_tissues_with_small_sample_size].index.to_list()
-            data = data.loc[~data['tissue'].isin(tissues_to_be_filtered_out), :]
-            n_tissues = data['tissue'].nunique()
-            RawLoader.log(logging.INFO,
-                          f'\tSelecting {n_tissues} tissues with at least {sample_size_per_tissue_min} samples...')
         # remove annotation
         data = data.select_dtypes(include=[np.number])
 
         return data
 
     @staticmethod
-    def subset_condition(
+    def subset_conditions(
             data_annotated: pd.DataFrame,
             condition: Condition,
-            pair_tissues: Optional[bool] = False
+            pair_tissues: Optional[bool] = False,
+            sample_size_per_tissue_min: Optional[bool] = False
     ) -> pd.DataFrame:
 
         # pair tissues in TCGA and GTEx data
@@ -447,7 +450,7 @@ class RawLoader(PickleLoader):
             data_annotated = data_annotated[data_annotated['tissue'].isin(tissues_common)]
             RawLoader.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
 
-        # subset conditions (tumor, normal, or combined samples)
+        # subset conditions
         if condition != Condition.Combined:
             try:
                 cohort_name: str = Cohort.TCGA.name if condition == Condition.Tumor else Cohort.GTEX.name
@@ -457,22 +460,40 @@ class RawLoader(PickleLoader):
                 raise logging.warning(
                     f'`{condition.name}` samples are not found. Check out data or/and Try another condition(s).')
 
+        # subset tissues by sample size
+        samples_per_tissue = data_annotated['tissue'].value_counts()
+        cond_tissues_with_small_sample_size = samples_per_tissue < sample_size_per_tissue_min
+        if sample_size_per_tissue_min is not None and np.any(cond_tissues_with_small_sample_size):
+            tissues_to_be_filtered_out = samples_per_tissue[cond_tissues_with_small_sample_size].index.to_list()
+            data_annotated = data_annotated.loc[~data_annotated['tissue'].isin(tissues_to_be_filtered_out), :]
+            RawLoader.log(
+                logging.INFO,
+                f"\tSelecting {data_annotated['tissue'].nunique()} tissues with at least {sample_size_per_tissue_min} samples..."
+            )
+
         return data_annotated
 
     @staticmethod
     def get_setup_id(
             condition: Condition,
-            pair_tissues: bool,
             log_transform: bool,
+            pair_tissues: bool,
+            include_adjacent_tissues: bool,
             cutoff_reads: Optional[int] = None,
-            sample_size_per_tissue_min: Optional[int] = None
+            sample_size_per_tissue_min: Optional[int] = None,
     ) -> str:
 
         setup_id = f'r{cutoff_reads if cutoff_reads >= 0 else ""}'
-        cond_sample_size_per_tissue_min: bool = sample_size_per_tissue_min is not None and sample_size_per_tissue_min > 0
-        setup_id += f's{sample_size_per_tissue_min}' if cond_sample_size_per_tissue_min else ''
         setup_id += 'Log' if log_transform else ''
-        setup_id += 'tP' if pair_tissues else ''
+
+        tissue_selection = ''
+        tissue_selection += 'A' if include_adjacent_tissues else ''
+        tissue_selection += 'P' if pair_tissues else ''
+        setup_id += f't{tissue_selection}' if tissue_selection else ''
+
+        if sample_size_per_tissue_min is not None and sample_size_per_tissue_min > 0:
+            setup_id += f's{sample_size_per_tissue_min}'
+
         setup_id += f'c{condition.name}'
 
         return setup_id
@@ -487,7 +508,8 @@ class RawLoader(PickleLoader):
             'cutoff_reads': self.cutoff_reads,
             'ratio_nan_to_drop': self.ratio_nan_to_drop,
             'log_transform': self.log_transform,
-            'sample_size_per_tissue_min': self.sample_size_per_tissue_min,
             'pair_tissues': self.pair_tissues,
+            'include_adjacent_tissues': self.include_adjacent_tissues,
+            'sample_size_per_tissue_min': self.sample_size_per_tissue_min,
             'meta': super(RawLoader, self).meta
         })
