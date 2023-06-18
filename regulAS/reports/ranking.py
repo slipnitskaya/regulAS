@@ -52,19 +52,29 @@ class FeatureRankingReport(Report):
     def generate(self, df: pd.DataFrame) -> List[Dict[str, pd.DataFrame]]:
         conn = RegulAS().db_connection
 
-        data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*df.index)))
+        (
+            data_name,
+            data_md5,
+            experiment_name,
+            experiment_md5,
+            *_
+        ) = map(lambda x: x.pop(), (set(item) for item in zip(*df.index)))
 
-        perf_groups = df.droplevel(['data', 'data_md5']).groupby(level='model')
+        perf_groups = df.droplevel(['data', 'data_md5', 'experiment_name', 'experiment_md5']).groupby(level='model')
         sort_col = difflib.get_close_matches(self.sort_by, df.columns, n=1)
 
         top_k_models = max(0, self.top_k_models) or perf_groups.ngroups
 
         result = defaultdict(  # data name ->
             lambda: defaultdict(  # data MD5 ->
-                lambda: defaultdict(  # model name ->
-                    lambda: defaultdict(  # hyper-parameters MD5 ->
-                        lambda: defaultdict(  # fold ->
-                            dict  # feature name -> feature score
+                lambda: defaultdict(  # experiment name ->
+                    lambda: defaultdict(  # experiment MD5 ->
+                        lambda: defaultdict(  # model name ->
+                            lambda: defaultdict(  # hyper-parameters MD5 ->
+                                lambda: defaultdict(  # fold ->
+                                    dict  # feature name -> feature score
+                                )
+                            )
                         )
                     )
                 )
@@ -93,6 +103,7 @@ class FeatureRankingReport(Report):
             ).filter(
                 and_(
                     persistence.Data.md5 == data_md5,
+                    persistence.Experiment.md5 == experiment_md5,
                     persistence.TransformationSequence.md5 == hyper_parameters_md5,
                     persistence.Transformation.fqn == model_name
                 )
@@ -135,9 +146,17 @@ class FeatureRankingReport(Report):
                             except ValueError:
                                 pass
 
-                        result[data_name][data_md5][model_name][hyper_parameters_md5][column_score][feature] = score
-                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:mean'][feature] = np.nan
-                        result[data_name][data_md5][model_name][hyper_parameters_md5]['score:std'][feature] = np.nan
+                        result[data_name][data_md5][experiment_name][experiment_md5][model_name][
+                            hyper_parameters_md5
+                        ][column_score][feature] = score
+
+                        result[data_name][data_md5][experiment_name][experiment_md5][model_name][
+                            hyper_parameters_md5
+                        ]['score:mean'][feature] = np.nan
+
+                        result[data_name][data_md5][experiment_name][experiment_md5][model_name][
+                            hyper_parameters_md5
+                        ]['score:std'][feature] = np.nan
 
                     columns_score.add(column_score)
                     num_rankings_found += 1
@@ -151,20 +170,38 @@ class FeatureRankingReport(Report):
         result = pd.DataFrame.from_dict(
             {
                 (
-                    data_name, data_md5, model_name, hyper_parameters_md5, column_score
-                ): result[data_name][data_md5][model_name][hyper_parameters_md5][column_score]
+                    data_name,
+                    data_md5,
+                    experiment_name,
+                    experiment_md5,
+                    model_name,
+                    hyper_parameters_md5,
+                    column_score
+                ): result[data_name][data_md5][experiment_name][
+                    experiment_md5
+                ][model_name][hyper_parameters_md5][column_score]
+
                 for data_name in result.keys()
                 for data_md5 in result[data_name].keys()
-                for model_name in result[data_name][data_md5].keys()
-                for hyper_parameters_md5 in result[data_name][data_md5][model_name].keys()
-                for column_score in result[data_name][data_md5][model_name][hyper_parameters_md5].keys()
+                for experiment_name in result[data_name][data_md5].keys()
+                for experiment_md5 in result[data_name][data_md5][experiment_name].keys()
+                for model_name in result[data_name][data_md5][experiment_name][experiment_md5].keys()
+                for hyper_parameters_md5 in result[data_name][data_md5][experiment_name][
+                    experiment_md5
+                ][model_name].keys()
+                for column_score in result[data_name][data_md5][experiment_name][
+                    experiment_md5
+                ][model_name][hyper_parameters_md5].keys()
             },
             orient='columns'
         )
         result.attrs['title'] = '-'.join([df.attrs.get('title', ''), self.name])
         result.attrs['model_aliases'] = model_aliases
         result.index.set_names(['feature'], inplace=True)
-        result.columns.set_names(['data', 'data_md5', 'model', 'hyper_parameters_md5', 'score'], inplace=True)
+        result.columns.set_names(
+            ['data', 'data_md5', 'experiment_name', 'experiment_md5', 'model', 'hyper_parameters_md5', 'score'],
+            inplace=True
+        )
 
         column_groups = list(result.groupby(axis=1, level=result.columns.names[:-1]).groups)
         column_group: Tuple

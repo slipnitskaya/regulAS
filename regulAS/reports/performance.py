@@ -70,9 +70,13 @@ class ModelPerformanceReport(Report):
 
         result = defaultdict(  # data name ->
             lambda: defaultdict(  # data MD5 ->
-                lambda: defaultdict(  # model name ->
-                    lambda: defaultdict(  # hyper-parameters MD5 ->
-                        dict  # fold -> performance objective
+                lambda: defaultdict(  # experiment name ->
+                    lambda: defaultdict(  # experiment MD5 ->
+                        lambda: defaultdict(  # model name ->
+                            lambda: defaultdict(  # hyper-parameters MD5 ->
+                                dict  # fold -> performance objective
+                            )
+                        )
                     )
                 )
             )
@@ -86,6 +90,7 @@ class ModelPerformanceReport(Report):
             for pipeline in tqdm.tqdm(pipelines, total=pipelines.count()):
                 data_name = pipeline.experiment.data.name
                 data_md5 = pipeline.experiment.data.md5
+                experiment_md5 = pipeline.experiment.md5
 
                 model = conn.query(
                     persistence.Transformation
@@ -175,11 +180,17 @@ class ModelPerformanceReport(Report):
                 column_test = metric_name.format('test', pipeline.fold)
                 column_train = metric_name.format('train', pipeline.fold)
 
-                result[data_name][data_md5][model_name][hyper_parameters_md5][
-                    'hyper_parameters'
-                ] = model_hyper_parameters
-                result[data_name][data_md5][model_name][hyper_parameters_md5][column_test] = metric_test
-                result[data_name][data_md5][model_name][hyper_parameters_md5][column_train] = metric_train
+                result[data_name][data_md5][self.experiment_name][
+                    experiment_md5
+                ][model_name][hyper_parameters_md5]['hyper_parameters'] = model_hyper_parameters
+
+                result[data_name][data_md5][self.experiment_name][
+                    experiment_md5
+                ][model_name][hyper_parameters_md5][column_test] = metric_test
+
+                result[data_name][data_md5][self.experiment_name][
+                    experiment_md5
+                ][model_name][hyper_parameters_md5][column_train] = metric_train
 
                 columns_test.add(column_test)
                 columns_train.add(column_train)
@@ -187,16 +198,29 @@ class ModelPerformanceReport(Report):
         result = pd.DataFrame.from_dict(
             {
                 (
-                    data_name, data_md5, model_name, hyper_parameters_md5
-                ): result[data_name][data_md5][model_name][hyper_parameters_md5]
+                    data_name,
+                    data_md5,
+                    experiment_name,
+                    experiment_md5,
+                    model_name,
+                    hyper_parameters_md5
+                ): result[data_name][data_md5][experiment_name][experiment_md5][model_name][hyper_parameters_md5]
+
                 for data_name in result.keys()
                 for data_md5 in result[data_name].keys()
-                for model_name in result[data_name][data_md5].keys()
-                for hyper_parameters_md5 in result[data_name][data_md5][model_name].keys()
+                for experiment_name in result[data_name][data_md5].keys()
+                for experiment_md5 in result[data_name][data_md5][experiment_name].keys()
+                for model_name in result[data_name][data_md5][experiment_name][experiment_md5].keys()
+                for hyper_parameters_md5 in result[data_name][data_md5][experiment_name][experiment_md5][
+                    model_name
+                ].keys()
             },
             orient='index'
         )
-        result.index.set_names(['data', 'data_md5', 'model', 'hyper_parameters_md5'], inplace=True)
+        result.index.set_names(
+            ['data', 'data_md5', 'experiment_name', 'experiment_md5', 'model', 'hyper_parameters_md5'],
+            inplace=True
+        )
         result.attrs['title'] = f'{self.experiment_name}-{self.name}'
         result.attrs['model_aliases'] = model_aliases
 
@@ -219,7 +243,18 @@ class ModelPerformanceReport(Report):
         )
 
         dataframes = list()
-        for data_name, df in result.groupby(level='data'):
+        for (data_name, experiment_md5), df in result.groupby(level=['data', 'experiment_md5']):
+            random_seed, = conn.query(
+                persistence.Experiment.random_seed
+            ).filter(
+                persistence.Experiment.md5 == experiment_md5
+            ).first()
+
+            if random_seed is not None:
+                df.attrs['title'] = df.attrs['title'] + f'-RS{random_seed}'
+
+            df.attrs['title'] = df.attrs['title'] + f'-{experiment_md5}'
+
             dataframes.append({'df': df})
 
         return dataframes

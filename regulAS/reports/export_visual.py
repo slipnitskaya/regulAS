@@ -93,7 +93,7 @@ class ModelPerformanceBarGraphReport(Report):
         else:
             bar_errors = [None] * len(bar_targets)
 
-        perf_groups = df.droplevel(['data', 'data_md5']).groupby(level='model')
+        perf_groups = df.droplevel(['data', 'data_md5', 'experiment_name', 'experiment_md5']).groupby(level='model')
 
         top_models = pd.concat([
             model_df.iloc[[0]].drop(columns='hyper_parameters') for _, model_df in perf_groups
@@ -214,8 +214,15 @@ class ModelPredictionsScatterPlotReport(Report):
     def generate(self, df: pd.DataFrame) -> None:
         conn = RegulAS().db_connection
 
-        data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*df.index)))
-        perf_groups = df.droplevel(['data', 'data_md5']).groupby(level='model')
+        (
+            data_name,
+            data_md5,
+            experiment_name,
+            experiment_md5,
+            *_
+        ) = map(lambda x: x.pop(), (set(item) for item in zip(*df.index)))
+
+        perf_groups = df.droplevel(['data', 'data_md5', 'experiment_name', 'experiment_md5']).groupby(level='model')
 
         top_models = pd.concat([
             model_df.iloc[[0]].drop(columns='hyper_parameters') for _, model_df in perf_groups
@@ -238,6 +245,7 @@ class ModelPredictionsScatterPlotReport(Report):
             ).filter(
                 and_(
                     persistence.Data.md5 == data_md5,
+                    persistence.Experiment.md5 == experiment_md5,
                     not_(persistence.Prediction.training),
                     persistence.Transformation.type_ == persistence.Transformation.Type.MODEL,
                     persistence.Transformation.fqn == model_fqn,
@@ -349,6 +357,8 @@ class FeatureRankingBarGraphReport(Report):
         if self.fig_width is None and self.fig_height is not None:
             self.fig_width = self.fig_height
 
+        return self.fig_width, self.fig_height
+
     def generate(self, df: pd.DataFrame) -> None:
         if isinstance(df.index, pd.MultiIndex):
             index = df.index
@@ -357,9 +367,16 @@ class FeatureRankingBarGraphReport(Report):
             index = df.columns
             axis = 1
 
-        data_name, data_md5, *_ = map(lambda x: x.pop(), (set(item) for item in zip(*index)))
+        (
+            data_name,
+            data_md5,
+            experiment_name,
+            experiment_md5,
+            *_
+        ) = map(lambda x: x.pop(), (set(item) for item in zip(*index)))
+
         score_groups = df.droplevel(
-            level=['data', 'data_md5'], axis=axis
+            level=['data', 'data_md5', 'experiment_name', 'experiment_md5'], axis=axis
         ).groupby(
             level=['model', 'hyper_parameters_md5'], axis=axis
         )
