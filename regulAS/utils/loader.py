@@ -302,8 +302,9 @@ class RawLoader(PickleLoader):
 
         return psi
 
-    @staticmethod
+    @classmethod
     def filter_reads(
+            cls,
             reads: pd.DataFrame,
             cutoff_reads: float
     ) -> pd.DataFrame:
@@ -317,7 +318,7 @@ class RawLoader(PickleLoader):
             samples_coverage_low = reads.columns[(reads < cutoff_reads).all().values].values.tolist()
 
         if len(samples_coverage_low) > 0:
-            RawLoader.log(logging.INFO,
+            cls.log(logging.INFO,
                           f'\tFiltering {len(samples_coverage_low)} low-coverage (cutoff={cutoff_reads}) samples...'
                           )
 
@@ -331,8 +332,9 @@ class RawLoader(PickleLoader):
         else:
             return reads
 
-    @staticmethod
+    @classmethod
     def process_junctions(
+            cls,
             junctions: pd.DataFrame,
             cutoff_reads: Optional[int] = 0
     ) -> pd.DataFrame:
@@ -341,10 +343,10 @@ class RawLoader(PickleLoader):
 
         # remove samples w.r.t. read coverage
         if cutoff_reads >= 0:
-            junctions = RawLoader.filter_reads(junctions, cutoff_reads)
+            junctions = cls.filter_reads(junctions, cutoff_reads)
 
         # calculate PSI
-        psi = RawLoader.calculate_psi(junctions)
+        psi = cls.calculate_psi(junctions)
         psi.index = ['psi']
 
         # remove samples with missing values
@@ -352,8 +354,9 @@ class RawLoader(PickleLoader):
 
         return psi
 
-    @staticmethod
+    @classmethod
     def process_rnaseq(
+            cls,
             rnaseq: pd.DataFrame,
             gene_ids: List,
             ratio_nan_to_drop: Optional[float] = 1.0,
@@ -373,7 +376,7 @@ class RawLoader(PickleLoader):
                 genes_sparse = rnaseq.columns[mask_sparse]
                 rnaseq = rnaseq.drop(genes_sparse, axis=1)
 
-                RawLoader.log(
+                cls.log(
                     logging.INFO,
                     '\tFiltering {} features (sparsity={:.1%})...'.format(n_rbps_sparse, 1.0 - ratio_nan_to_drop)
                 )
@@ -392,7 +395,7 @@ class RawLoader(PickleLoader):
             genes_found = list(set(gene_ids) & set(rnaseq.columns))
         if genes_found:
             # subset genes
-            RawLoader.log(logging.INFO, f'\tSelecting {len(genes_found)} genes...')
+            cls.log(logging.INFO, f'\tSelecting {len(genes_found)} genes...')
             rnaseq = rnaseq.reindex(genes_found, axis=1)
         else:
             sys.exit('Program is terminated as no gene IDs to subset are found in the RNA-Seq data.'
@@ -400,16 +403,17 @@ class RawLoader(PickleLoader):
 
         # log-transform values
         if log_transform:
-            RawLoader.log(logging.INFO, '\tLog-transforming expression values...')
+            cls.log(logging.INFO, '\tLog-transforming expression values...')
             rnaseq = rnaseq.apply(lambda x: np.log2(x + 1e-3))
 
             if rnaseq.isnull().sum().sum() > 0:
-                RawLoader.log(logging.WARNING, 'Log-transformed data contain NaN values')
+                cls.log(logging.WARNING, 'Log-transformed data contain NaN values')
 
         return rnaseq
 
-    @staticmethod
+    @classmethod
     def prepare_data(
+            cls,
             rnaseq: pd.DataFrame,
             psi: pd.DataFrame,
             metadata: pd.DataFrame,
@@ -425,7 +429,7 @@ class RawLoader(PickleLoader):
         data = data.join(metadata, how='inner')
 
         # subset conditions and tissues
-        data = RawLoader.subset_conditions(
+        data = cls.subset_conditions(
             data, condition=condition, pair_tissues=pair_tissues, sample_size_per_tissue_min=sample_size_per_tissue_min
         )
 
@@ -434,8 +438,9 @@ class RawLoader(PickleLoader):
 
         return data
 
-    @staticmethod
+    @classmethod
     def subset_conditions(
+            cls,
             data_annotated: pd.DataFrame,
             condition: Condition,
             pair_tissues: Optional[bool] = False,
@@ -448,7 +453,7 @@ class RawLoader(PickleLoader):
                 set(data_annotated.loc[data_annotated['cohort'] == Cohort.TCGA.name, 'tissue']).intersection(
                     set(data_annotated.loc[data_annotated['cohort'] == Cohort.GTEX.name, 'tissue'])))
             data_annotated = data_annotated[data_annotated['tissue'].isin(tissues_common)]
-            RawLoader.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
+            cls.log(logging.INFO, f"\tSelecting {data_annotated['tissue'].nunique()} common tissues...")
 
         # subset conditions
         if condition != Condition.Combined:
@@ -466,7 +471,7 @@ class RawLoader(PickleLoader):
         if sample_size_per_tissue_min is not None and np.any(cond_tissues_with_small_sample_size):
             tissues_to_be_filtered_out = samples_per_tissue[cond_tissues_with_small_sample_size].index.to_list()
             data_annotated = data_annotated.loc[~data_annotated['tissue'].isin(tissues_to_be_filtered_out), :]
-            RawLoader.log(
+            cls.log(
                 logging.INFO,
                 f"\tSelecting {data_annotated['tissue'].nunique()} tissues with at least {sample_size_per_tissue_min} samples..."
             )
