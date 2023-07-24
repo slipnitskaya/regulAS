@@ -2,7 +2,7 @@
 [![python](https://img.shields.io/badge/Python_3.7+-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![sqlite](https://img.shields.io/badge/SQLite-%2307405e.svg?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/slipnitskaya/regulAS/blob/master/LICENSE)
-[![DOI](https://zenodo.org/badge/374424916.svg)](https://zenodo.org/badge/latestdoi/374424916)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.8152781.svg)](https://doi.org/10.5281/zenodo.8152781)
 
 ## A Bioinformatics Tool for the Integrative Analysis of Alternative Splicing Regulome using RNA-Seq data across cancer and tissue types
 
@@ -247,6 +247,7 @@ in the project directory as well as the reports if any was submitted to generate
 
 ## How to cite regulAS?
 When using **regulAS** in academic work, authors are encouraged to reference this work via Zenodo 
-([10.5281/zenodo.8152782](https://doi.org/10.5281/zenodo.8152782)).
+([10.5281/zenodo.8152781](https://doi.org/10.5281/zenodo.8152781))
+
 An example acknowledgment statement follows: The analysis used for the results 
 described in this manuscript was obtained using the regulAS package.
