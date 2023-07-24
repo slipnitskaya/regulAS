@@ -1,5 +1,10 @@
 # regulAS
-## Machine learning pipeline for identification of alternative splicing regulators in large-scale RNA-seq data
+[![python](https://img.shields.io/badge/Python_3.7+-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![sqlite](https://img.shields.io/badge/SQLite-%2307405e.svg?logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/slipnitskaya/regulAS/blob/master/LICENSE)
+[![DOI](https://zenodo.org/badge/374424916.svg)](https://zenodo.org/badge/latestdoi/374424916)
+
+## A Bioinformatics Tool for the Integrative Analysis of Alternative Splicing Regulome using RNA-Seq data across cancer and tissue types
 
 ## Overview
 
@@ -14,9 +19,9 @@ driven by SQLite relational database engine and an extension-friendly API compat
 with `scikit-learn`.
 
 **regulAS** is designed to provide users with a "Low-Code" experiment management solution that is 
-dedicated for researchers of alternative splicing regulatory mechanisms to simplify typical data mining and machine learning, allowing them to alleviate the number of the prospective regulators of a splicing event of interest for the further in-depth bioinformatics and experimental analysis.
-
-
+dedicated for researchers of alternative splicing regulatory mechanisms to simplify computational workflow, 
+allowing them to alleviate the number of the prospective regulatory candidates of splicing changes for further 
+in-depth bioinformatics and experimental analysis.
  
 
 ## Structure
@@ -29,12 +34,13 @@ acquisition, fitting of machine learning models, persistence and export of resul
 The **regulAS** package encapsulates ETL-, ML- and report generation workflows.
 ETL-workflow includes data Extraction, Transformation and Loading operations,
 thus preparing the input for the next step, namely Machine Learning (ML) part.
-The ML-workflow incorporates typical modeling-related tasks such as performance evaluation,
-hyper-parameter tuning and feature ranking.
-The ML-workflow output as well as the experimental setup serves as a source for report
-generators that can be run afterwards in order to produce summary of an experiment.
+The ML-workflow incorporates predictive modeling, hyper-parameter optimization, 
+performance evaluation and feature ranking tasks for identifying candidate 
+regulators of alternative splicing events across tumors and tissue types.
+The ML-workflow outputs can subsequently be utilized for generating summary reports in
+tabular and visual forms to support interpretation of the findings and knowledge sharing.
 
-![regulAS workflow](images/regulAS_workflow.png "regulAS workflow")
+![regulAS workflow](https://raw.githubusercontent.com/slipnitskaya/regulAS/master/images/regulAS_workflow.png "regulAS workflow")
 
 #### Data loading
 
@@ -217,7 +223,7 @@ The database includes the following tables:
  * `TransformationSequence` &ndash; contains details on the use of models and transformations
  * `HyperParameterValue` &ndash; contains details on the specific values of hyper-parameters
 
-![regulAS database](images/regulAS_database.png "regulAS database")
+![regulAS database](https://raw.githubusercontent.com/slipnitskaya/regulAS/master/images/regulAS_database.png "regulAS database")
 
 ## Usage
 
@@ -233,8 +239,14 @@ cd /path/to/the/project
 # run the experimental setup on different dataset files
 python -m regulAS.app --multirun \
 experiment=experiments/experiment_tasks \
-+dataset.path_to_file=data/data_gtex.pkl,data/data_tcga.pkl
++dataset.path_to_file=data/data_cNormal.pkl,data/data_cTumor.pkl
 ```
 
 After **regulAS** finishes all the tasks, an SQLite database file `regulAS.db` will be stored
 in the project directory as well as the reports if any was submitted to generate.
+
+## How to cite regulAS?
+When using **regulAS** in academic work, authors are encouraged to reference this work via Zenodo 
+([10.5281/zenodo.8152782](https://doi.org/10.5281/zenodo.8152782)).
+An example acknowledgment statement follows: The analysis used for the results 
+described in this manuscript was obtained using the regulAS package.
