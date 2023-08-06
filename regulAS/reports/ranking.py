@@ -213,9 +213,9 @@ class FeatureRankingReport(Report):
                 )
             )
 
-            scores = result[columns]
-            result[column_group + ('score:mean',)] = np.mean(scores, axis=1)
-            result[column_group + ('score:std',)] = np.std(scores, axis=1)
+            scores = result[columns].replace(to_replace=[None], value=np.nan)
+            result[column_group + ('score:mean',)] = np.nanmean(scores, axis=1)
+            result[column_group + ('score:std',)] = np.nanstd(scores, axis=1)
 
             result = result.drop(columns=columns)
 
