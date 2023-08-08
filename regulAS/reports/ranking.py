@@ -207,9 +207,12 @@ class FeatureRankingReport(Report):
         column_group: Tuple
         for column_group in column_groups:
             columns = list(
-                map(
-                    lambda x: x[0] + x[1],
-                    itertools.product([column_group], map(lambda col: (col,), columns_score))
+                filter(
+                    lambda col: col in result.columns,
+                    map(
+                        lambda x: x[0] + x[1],
+                        itertools.product([column_group], map(lambda col: (col,), columns_score))
+                    )
                 )
             )
 
